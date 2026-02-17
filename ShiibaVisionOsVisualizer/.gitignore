@@ -1,0 +1,64 @@
+# ==============================
+# Xcode
+# ==============================
+
+# User-specific settings
+*.xcuserstate
+xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# Build products
+build/
+DerivedData/
+*.o
+*.d
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Xcode automatic file
+*.moved-aside
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode2v3
+!default.mode2v3
+*.perspectivev3
+!default.perspectivev3
+
+# Playgrounds
+timeline.xctimeline
+playground.xcworkspace
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Packages/
+Package.resolved
+
+# CocoaPods (if used)
+# Pods/
+# Podfile.lock
+
+# Carthage (if used)
+# Carthage/Build/
+# Carthage/Checkouts/
+
+# ==============================
+# macOS
+# ==============================
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+.fseventsd
+
+# ==============================
+# PLY data files (large assets)
+# ==============================
+# コメントアウトを外すとPLYファイルをGit管理から除外できます
+*.ply
