@@ -65,6 +65,7 @@ final class PointCloudRenderer {
         // Enable alpha blending for soft circle edges
         let colorAttachment = renderDescriptor.colorAttachments[0]!
         colorAttachment.pixelFormat              = layerRenderer.configuration.colorFormat
+        print("[PointCloudRenderer] colorFormat = \(layerRenderer.configuration.colorFormat.rawValue)")
         colorAttachment.isBlendingEnabled        = true
         colorAttachment.rgbBlendOperation        = .add
         colorAttachment.alphaBlendOperation      = .add
@@ -200,10 +201,12 @@ final class PointCloudRenderer {
                                 offset: 0,
                                 index: kBufferIndexPointCloudOutput)
 
-        // Draw as points
-        encoder.drawPrimitives(type: .point,
+        // Draw as instanced quads (6 vertices = 2 triangles per point)
+        // .point is not allowed when a rasterization rate map is active (visionOS foveated rendering)
+        encoder.drawPrimitives(type: .triangle,
                                vertexStart: 0,
-                               vertexCount: data.pointCount)
+                               vertexCount: 6,
+                               instanceCount: data.pointCount)
 
         encoder.endEncoding()
     }

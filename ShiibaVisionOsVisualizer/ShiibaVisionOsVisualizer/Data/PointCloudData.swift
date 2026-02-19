@@ -9,29 +9,12 @@ import Foundation
 import Metal
 import simd
 
-/// A single point in Unity's coordinate format, as read directly from the PLY binary.
-/// Layout matches the packed binary format in the PLY file (27 bytes, no padding).
-struct UnityPoint {
-    var x: Float
-    var y: Float
-    var z: Float
-    var r: UInt8
-    var g: UInt8
-    var b: UInt8
-    var vx: Float
-    var vy: Float
-    var vz: Float
-}
-
 /// Holds the raw point cloud data loaded from a PLY file,
 /// along with a Metal buffer ready for GPU processing.
 struct PointCloudData {
 
     /// Total number of points
     let pointCount: Int
-
-    /// Raw points in Unity coordinate format
-    let points: [UnityPoint]
 
     /// MTLBuffer containing the raw Unity-format point data.
     /// Used as input to the compute shader.
@@ -41,25 +24,40 @@ struct PointCloudData {
     /// Used as input to the vertex shader.
     let outputBuffer: MTLBuffer
 
-    init?(points: [UnityPoint], device: MTLDevice) {
-        guard !points.isEmpty else { return nil }
+    /// PLY バイナリデータを中間配列なしで直接 MTLBuffer に転送する。
+    /// - Parameters:
+    ///   - data: PLY ファイル全体の Data
+    ///   - binaryStart: バイナリデータの開始オフセット（ヘッダの直後）
+    ///   - pointCount: 頂点数
+    ///   - device: MTLDevice
+    init?(data: Data, binaryStart: Data.Index, pointCount: Int, device: MTLDevice) {
+        guard pointCount > 0 else { return nil }
 
-        self.pointCount = points.count
-        self.points = points
+        self.pointCount = pointCount
 
-        // Input buffer: raw Unity format (27 bytes per point, packed)
-        // We copy into a buffer using the exact byte layout of UnityPoint
-        let inputByteCount = points.count * MemoryLayout<UnityPoint>.stride
-        guard let inputBuf = device.makeBuffer(bytes: points,
-                                               length: inputByteCount,
-                                               options: .storageModeShared) else {
-            return nil
-        }
+        // Input buffer: PLY バイナリを1回のコピーで直接転送（中間配列なし）
+        // 27 bytes/point (packed): float x,y,z + uchar r,g,b + float vx,vy,vz
+        let bytesPerPoint = 27
+        let inputByteCount = pointCount * bytesPerPoint
+
+        guard let inputBuf = data.withUnsafeBytes({ rawBuffer -> MTLBuffer? in
+            guard let baseAddress = rawBuffer.baseAddress else { return nil }
+            // binaryStart は data.startIndex からの絶対位置
+            // data.startIndex が 0 でない場合に備えて明示的に計算
+            let byteOffset = binaryStart - data.startIndex
+            let binaryPtr = baseAddress.advanced(by: byteOffset)
+            return device.makeBuffer(bytes: binaryPtr,
+                                     length: inputByteCount,
+                                     options: .storageModeShared)
+        }) else { return nil }
+
         inputBuf.label = "PointCloud Input Buffer (Unity)"
         self.inputBuffer = inputBuf
 
-        // Output buffer: converted VisionOS format (PointVertex: float3 position + float3 color = 24 bytes)
-        let outputByteCount = points.count * (MemoryLayout<SIMD3<Float>>.stride * 2)
+        // Output buffer: compute shader が書き込む VisionOS 形式
+        // PointVertex: float4 position + float4 color = 32 bytes/point
+        // SIMD3<Float>.stride = 16 bytes なので stride*2 = 32 bytes で一致
+        let outputByteCount = pointCount * (MemoryLayout<SIMD3<Float>>.stride * 2)
         guard let outputBuf = device.makeBuffer(length: outputByteCount,
                                                 options: .storageModeShared) else {
             return nil

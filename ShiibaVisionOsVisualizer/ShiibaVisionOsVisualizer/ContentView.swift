@@ -11,6 +11,9 @@ import RealityKitContent
 
 struct ContentView: View {
 
+    @Environment(AppModel.self) private var appModel
+    @Environment(\.dismissWindow) private var dismissWindow
+
     var body: some View {
         VStack {
             Model3D(named: "Scene", bundle: realityKitContentBundle)
@@ -21,6 +24,11 @@ struct ContentView: View {
             ToggleImmersiveSpaceButton()
         }
         .padding()
+        .onChange(of: appModel.immersiveSpaceState) { _, newState in
+            if newState == .open {
+                dismissWindow()
+            }
+        }
     }
 }
 

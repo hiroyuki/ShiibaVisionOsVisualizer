@@ -46,19 +46,52 @@ actor PLYLoader {
 
     /// Loads a PLY file from an arbitrary URL.
     func load(url: URL, device: MTLDevice) async throws -> PointCloudData {
-        let data = try Data(contentsOf: url, options: .mappedIfSafe)
-        let points = try parsePLY(data: data)
+        let clock = ContinuousClock()
+        let t0 = clock.now
 
-        guard let pointCloudData = PointCloudData(points: points, device: device) else {
+        // ① ディスク読み込み
+        let data = try Data(contentsOf: url, options: .mappedIfSafe)
+        let t1 = clock.now
+
+        // ② ヘッダパース（頂点数・フォーマット確認のみ）
+        let (pointCount, binaryStart) = try parsePLYHeader(data: data)
+        let t2 = clock.now
+
+        // ③ MTLBuffer 確保 + ディスクデータを直接コピー（中間配列なし）
+        guard let pointCloudData = PointCloudData(
+            data: data,
+            binaryStart: binaryStart,
+            pointCount: pointCount,
+            device: device
+        ) else {
             throw PLYLoaderError.invalidHeader
         }
+        let t3 = clock.now
+
+        let fileSize = Double(data.count) / 1024 / 1024
+        print("""
+        [PLYLoader] \(url.lastPathComponent) (\(String(format: "%.2f", fileSize)) MB, \(pointCount) points)
+          ① disk read : \(formatMS(t0, t1))
+          ② parse     : \(formatMS(t1, t2))
+          ③ MTLBuffer : \(formatMS(t2, t3))
+          ─────────────────────────
+          total       : \(formatMS(t0, t3))  [budget: 33.3ms @ 30fps]
+        """)
+
         return pointCloudData
+    }
+
+    private func formatMS(_ start: ContinuousClock.Instant, _ end: ContinuousClock.Instant) -> String {
+        let ms = Double(start.duration(to: end).components.attoseconds) / 1e15
+        let budget33ms = ms > 33.3 ? " ⚠️ over budget" : ""
+        return String(format: "%.2f ms%@", ms, budget33ms)
     }
 
     // MARK: - Private
 
-    private func parsePLY(data: Data) throws -> [UnityPoint] {
-        // Find the end of the header ("end_header\n")
+    /// ヘッダのみをパースし、頂点数とバイナリデータの開始位置を返す。
+    /// 中間配列を作らず、バイナリデータはそのまま MTLBuffer に渡す。
+    private func parsePLYHeader(data: Data) throws -> (pointCount: Int, binaryStart: Data.Index) {
         guard let headerRange = findHeaderEnd(in: data) else {
             throw PLYLoaderError.invalidHeader
         }
@@ -68,24 +101,19 @@ actor PLYLoader {
             throw PLYLoaderError.invalidHeader
         }
 
-        // Parse vertex count and validate format
         let vertexCount = try parseVertexCount(from: headerString)
         try validateFormat(header: headerString)
 
-        // Binary data starts after "end_header\n"
         let binaryStart = headerRange.upperBound
-        let binaryData = data[binaryStart...]
-
-        // Each point is 27 bytes (packed):
-        // float x,y,z (12) + uchar r,g,b (3) + float vx,vy,vz (12)
         let bytesPerPoint = 27
         let expectedBytes = vertexCount * bytesPerPoint
+        let actualBytes = data.count - binaryStart
 
-        guard binaryData.count >= expectedBytes else {
-            throw PLYLoaderError.unexpectedDataSize(expected: expectedBytes, actual: binaryData.count)
+        guard actualBytes >= expectedBytes else {
+            throw PLYLoaderError.unexpectedDataSize(expected: expectedBytes, actual: actualBytes)
         }
 
-        return try parseBinaryPoints(data: binaryData, count: vertexCount)
+        return (vertexCount, binaryStart)
     }
 
     private func findHeaderEnd(in data: Data) -> Range<Data.Index>? {
@@ -112,41 +140,5 @@ actor PLYLoader {
         guard header.contains("format binary_little_endian") else {
             throw PLYLoaderError.unsupportedFormat
         }
-    }
-
-    private func parseBinaryPoints(data: Data.SubSequence, count: Int) throws -> [UnityPoint] {
-        var points = [UnityPoint]()
-        points.reserveCapacity(count)
-
-        // Work with raw bytes for performance
-        try data.withUnsafeBytes { rawBuffer in
-            let ptr = rawBuffer.baseAddress!
-            let bytesPerPoint = 27
-
-            for i in 0..<count {
-                let offset = i * bytesPerPoint
-
-                // float x, y, z (4 bytes each, little-endian)
-                let x = ptr.loadUnaligned(fromByteOffset: offset + 0, as: Float.self)
-                let y = ptr.loadUnaligned(fromByteOffset: offset + 4, as: Float.self)
-                let z = ptr.loadUnaligned(fromByteOffset: offset + 8, as: Float.self)
-
-                // uchar r, g, b (1 byte each)
-                let r = ptr.load(fromByteOffset: offset + 12, as: UInt8.self)
-                let g = ptr.load(fromByteOffset: offset + 13, as: UInt8.self)
-                let b = ptr.load(fromByteOffset: offset + 14, as: UInt8.self)
-
-                // float vx, vy, vz (4 bytes each, little-endian)
-                let vx = ptr.loadUnaligned(fromByteOffset: offset + 15, as: Float.self)
-                let vy = ptr.loadUnaligned(fromByteOffset: offset + 19, as: Float.self)
-                let vz = ptr.loadUnaligned(fromByteOffset: offset + 23, as: Float.self)
-
-                points.append(UnityPoint(x: x, y: y, z: z,
-                                         r: r, g: g, b: b,
-                                         vx: vx, vy: vy, vz: vz))
-            }
-        }
-
-        return points
     }
 }

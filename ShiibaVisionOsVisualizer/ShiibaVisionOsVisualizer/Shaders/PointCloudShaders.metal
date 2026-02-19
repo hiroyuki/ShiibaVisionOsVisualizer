@@ -14,23 +14,30 @@ using namespace metal;
 // MARK: - Data Structures
 
 /// Input point in Unity's packed binary format (27 bytes, no padding)
+/// NOTE: uchar3 は Metal で 4バイトアライメントされるため使用不可。
+///       r, g, b を個別の uchar として定義することで packed 27バイトを正確に読む。
 struct UnityPointData {
-    packed_float3 position;  // 12 bytes (x, y, z in Unity left-handed coords)
-    uchar3        color;     //  3 bytes (r, g, b as 0-255)
-    packed_float3 velocity;  // 12 bytes (vx, vy, vz in Unity coords)
+    packed_float3 position;  // 12 bytes: x, y, z
+    uchar         r;         //  1 byte
+    uchar         g;         //  1 byte
+    uchar         b;         //  1 byte
+    packed_float3 velocity;  // 12 bytes: vx, vy, vz
 } __attribute__((packed));   // total: 27 bytes
 
 /// Output point in VisionOS format, written by compute shader, read by vertex shader
+/// NOTE: float3 は GPU 上で 16 バイトアライメントされるため、
+///       明示的に float4 を使い Swift 側と byte layout を一致させる。
+///       w 成分はそれぞれ 1.0 / 0.0 で埋める（未使用）。
 struct PointVertex {
-    float3 position;  // VisionOS right-handed coordinate
-    float3 color;     // Linear color (0.0 - 1.0)
+    float4 position;  // VisionOS right-handed coordinate (w = 1.0)
+    float4 color;     // Linear color (0.0 - 1.0)        (w = 0.0)
 };
 
 /// Vertex shader output / fragment shader input
 struct PointFragIn {
     float4 position [[position]];
     float3 color;
-    float  pointSize [[point_size]];
+    float2 uv;       // [-1, 1] range, used for circular clipping in fragment shader
 };
 
 // MARK: - Compute Shader
@@ -47,41 +54,64 @@ kernel void pointCloudConvert(
     UnityPointData src = inputPoints[index];
 
     // Unity (left-handed) → VisionOS (right-handed): negate X axis
-    outputPoints[index].position = float3(-src.position.x,
+    outputPoints[index].position = float4(-src.position.x,
                                            src.position.y,
-                                           src.position.z);
+                                           src.position.z,
+                                           1.0);
 
-    // sRGB (0-255) → Linear float (0.0-1.0)
-    float3 srgb = float3(src.color) / 255.0;
-//    outputPoints[index].color = pow(srgb, float3(2.2));
-    outputPoints[index].color = float3(src.color) / 255.0;
+    // PLY の色データ (sRGB, 0-255) を正規化して渡す。
+    // colorFormat = .rgba8Unorm_srgb のため GPU が sRGB として正しく解釈する。
+    outputPoints[index].color = float4(float(src.r) / 255.0,
+                                       float(src.g) / 255.0,
+                                       float(src.b) / 255.0,
+                                       0.0);
 }
 
 // MARK: - Vertex Shader
 
-/// Renders each point as a point sprite.
-/// Point size scales with distance: closer points appear larger.
+/// Renders each point as a billboard quad (2 triangles) using instancing.
+/// - instanceID: indexes into the point cloud buffer
+/// - vertexID (0-5): defines the 6 vertices of the quad (2 triangles)
+/// Compatible with rasterization rate map (foveated rendering on visionOS).
 vertex PointFragIn pointCloudVertex(
     device const PointVertex*      points            [[ buffer(BufferIndexPointCloudOutput) ]],
     constant     Uniforms&         uniforms          [[ buffer(BufferIndexUniforms)         ]],
     constant     ViewProjectionArray& viewProjection [[ buffer(BufferIndexViewProjection)   ]],
     ushort amp_id                                    [[ amplification_id                    ]],
-    uint   vertexID                                  [[ vertex_id                           ]]
+    uint   vertexID                                  [[ vertex_id                           ]],
+    uint   instanceID                                [[ instance_id                         ]]
 ) {
-    PointVertex point = points[vertexID];
+    PointVertex point = points[instanceID];
 
-    float4 worldPos = uniforms.modelMatrix * float4(point.position, 1.0);
-    float4 clipPos  = viewProjection.viewProjectionMatrix[amp_id] * worldPos;
+    float4 worldPos = uniforms.modelMatrix * float4(point.position.xyz, 1.0);
 
-    // Distance-based point size: closer = larger, farther = smaller
-    // Clamp between 2 and 12 pixels
-    float dist      = length(worldPos.xyz);
-    float pointSize = clamp(8.0 / dist, 2.0, 12.0);
+    // Distance-based sprite size: closer = larger, farther = smaller
+    float dist       = length(worldPos.xyz);
+    float spriteSize = clamp(0.005 / dist, 0.0005, 0.005);
+
+    // Quad corners in UV space [-1, 1]
+    // Two triangles: (0,1,2) and (3,4,5)
+    //  3(=-1,+1)  1(=+1,+1)
+    //  2(=-1,-1)  0(=+1,-1)
+    const float2 uvs[6] = {
+        float2( 1.0, -1.0),  // triangle 0
+        float2( 1.0,  1.0),
+        float2(-1.0, -1.0),
+        float2(-1.0, -1.0),  // triangle 1
+        float2( 1.0,  1.0),
+        float2(-1.0,  1.0),
+    };
+    float2 uv = uvs[vertexID];
+
+    // Billboard: offset in clip space so the quad always faces the camera
+    float4 clipCenter = viewProjection.viewProjectionMatrix[amp_id] * worldPos;
+    float2 offset     = uv * spriteSize * float2(clipCenter.w);
+    float4 clipPos    = clipCenter + float4(offset, 0.0, 0.0);
 
     PointFragIn out;
-    out.position  = clipPos;
-    out.color     = point.color;
-    out.pointSize = pointSize;
+    out.position = clipPos;
+    out.color    = point.color.rgb;
+    out.uv       = uv;
     return out;
 }
 
@@ -89,13 +119,10 @@ vertex PointFragIn pointCloudVertex(
 
 /// Renders each point as a soft circle (circular clipping + edge fade).
 fragment float4 pointCloudFragment(
-    PointFragIn in          [[ stage_in      ]],
-    float2      pointCoord  [[ point_coord   ]]
+    PointFragIn in [[stage_in]]
 ) {
-    // pointCoord is (0,0) top-left to (1,1) bottom-right of the point sprite
-    // Convert to [-1, 1] range and compute distance from center
-    float2 uv   = pointCoord * 2.0 - 1.0;
-    float  dist = length(uv);
+    // uv is [-1, 1] passed from vertex shader
+    float dist = length(in.uv);
 
     // Discard pixels outside the circle
     if (dist > 1.0) {
