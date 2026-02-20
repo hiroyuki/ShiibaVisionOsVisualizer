@@ -44,7 +44,7 @@ struct PointFragIn {
 
 /// Converts point cloud data from Unity format to VisionOS format.
 /// - Coordinate system: Unity left-handed (-x, y, z) → VisionOS right-handed
-/// - Color: uchar 0-255 → float 0.0-1.0, sRGB → Linear (pow 2.2)
+/// - Color: uchar 0-255 → float 0.0-1.0
 /// - Velocity: same coordinate conversion as position (reserved for future use)
 kernel void pointCloudConvert(
     device const UnityPointData* inputPoints  [[ buffer(BufferIndexPointCloudInput)  ]],
@@ -60,7 +60,6 @@ kernel void pointCloudConvert(
                                            1.0);
 
     // PLY の色データ (sRGB, 0-255) を正規化して渡す。
-    // colorFormat = .rgba8Unorm_srgb のため GPU が sRGB として正しく解釈する。
     outputPoints[index].color = float4(float(src.r) / 255.0,
                                        float(src.g) / 255.0,
                                        float(src.b) / 255.0,
@@ -74,20 +73,16 @@ kernel void pointCloudConvert(
 /// - vertexID (0-5): defines the 6 vertices of the quad (2 triangles)
 /// Compatible with rasterization rate map (foveated rendering on visionOS).
 vertex PointFragIn pointCloudVertex(
-    device const PointVertex*      points            [[ buffer(BufferIndexPointCloudOutput) ]],
-    constant     Uniforms&         uniforms          [[ buffer(BufferIndexUniforms)         ]],
-    constant     ViewProjectionArray& viewProjection [[ buffer(BufferIndexViewProjection)   ]],
-    ushort amp_id                                    [[ amplification_id                    ]],
-    uint   vertexID                                  [[ vertex_id                           ]],
-    uint   instanceID                                [[ instance_id                         ]]
+    device const PointVertex*         points            [[ buffer(BufferIndexPointCloudOutput) ]],
+    constant     Uniforms&            uniforms          [[ buffer(BufferIndexUniforms)         ]],
+    constant     ViewProjectionArray& viewProjection    [[ buffer(BufferIndexViewProjection)   ]],
+    ushort amp_id                                       [[ amplification_id                    ]],
+    uint   vertexID                                     [[ vertex_id                           ]],
+    uint   instanceID                                   [[ instance_id                         ]]
 ) {
     PointVertex point = points[instanceID];
 
     float4 worldPos = uniforms.modelMatrix * float4(point.position.xyz, 1.0);
-
-    // Distance-based sprite size: closer = larger, farther = smaller
-    float dist       = length(worldPos.xyz);
-    float spriteSize = clamp(0.005 / dist, 0.0005, 0.005);
 
     // Quad corners in UV space [-1, 1]
     // Two triangles: (0,1,2) and (3,4,5)
@@ -103,10 +98,20 @@ vertex PointFragIn pointCloudVertex(
     };
     float2 uv = uvs[vertexID];
 
-    // Billboard: offset in clip space so the quad always faces the camera
-    float4 clipCenter = viewProjection.viewProjectionMatrix[amp_id] * worldPos;
-    float2 offset     = uv * spriteSize * float2(clipCenter.w);
-    float4 clipPos    = clipCenter + float4(offset, 0.0, 0.0);
+    // Billboard: build quad in world space using camera right/up vectors
+    // extracted from the view-projection matrix rows.
+    // physicalSize is the half-extent in meters → 1cm total diameter
+    float3 camRight = float3(viewProjection.viewProjectionMatrix[amp_id][0][0],
+                             viewProjection.viewProjectionMatrix[amp_id][1][0],
+                             viewProjection.viewProjectionMatrix[amp_id][2][0]);
+    float3 camUp    = float3(viewProjection.viewProjectionMatrix[amp_id][0][1],
+                             viewProjection.viewProjectionMatrix[amp_id][1][1],
+                             viewProjection.viewProjectionMatrix[amp_id][2][1]);
+
+    float  physicalSize = 0.005; // 0.5cm half-extent = 1cm diameter
+    float3 worldOffset  = (camRight * uv.x + camUp * uv.y) * physicalSize;
+    float4 clipPos      = viewProjection.viewProjectionMatrix[amp_id]
+                          * (worldPos + float4(worldOffset, 0.0));
 
     PointFragIn out;
     out.position = clipPos;
@@ -119,7 +124,7 @@ vertex PointFragIn pointCloudVertex(
 
 /// Renders each point as a soft circle (circular clipping + edge fade).
 fragment float4 pointCloudFragment(
-    PointFragIn in [[stage_in]]
+    PointFragIn in [[ stage_in ]]
 ) {
     // uv is [-1, 1] passed from vertex shader
     float dist = length(in.uv);
