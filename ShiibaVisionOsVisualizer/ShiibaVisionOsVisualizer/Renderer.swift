@@ -119,8 +119,9 @@ actor Renderer {
 
         do {
             pointCloudRenderer = try PointCloudRenderer(device: device, layerRenderer: layerRenderer)
-            // Initialize with default placement position
-            pointCloudRenderer.modelMatrix = matrix4x4_translation(0, 0, -1.5)
+            // Initialize at origin - will be updated by world anchor
+            pointCloudRenderer.modelMatrix = matrix_identity_float4x4
+            print("[Renderer] ✅ PointCloudRenderer initialized with identity matrix")
             
             axesRenderer = try AxesRenderer(device: device, layerRenderer: layerRenderer)
             // Initialize axes at eye level, 1m in front (visible immediately)
@@ -229,21 +230,24 @@ actor Renderer {
                         // Get saved yaw angle from AppModel
                         let yaw = await appModel.worldAnchorYaw
                         
+                        // Get floor Y coordinate from AppModel
+                        let floorY = await appModel.detectedFloorY ?? 0.0
+                        
                         // Create transform: Translation * Rotation(Y-axis)
                         let rotationMatrix = matrix4x4_rotation(radians: yaw, axis: SIMD3<Float>(0, 1, 0))
-                        let translationMatrix = matrix4x4_translation(anchorPosition.x, 0.0, anchorPosition.z)
+                        let translationMatrix = matrix4x4_translation(anchorPosition.x, floorY, anchorPosition.z)
                         let matrix = translationMatrix * rotationMatrix
                         
                         pointCloudRenderer.modelMatrix = matrix
                         
                         if isPreferredAnchor {
                             if wasReplacing {
-                                print("[Renderer] ✅✅ Preferred anchor REPLACED old cache at position: (\(anchorPosition.x), 0.0, \(anchorPosition.z)), yaw: \(yaw * 180 / .pi)°, ID: \(worldAnchor.id)")
+                                print("[Renderer] ✅✅ Preferred anchor REPLACED old cache at position: (\(anchorPosition.x), \(floorY), \(anchorPosition.z)), yaw: \(yaw * 180 / .pi)°, ID: \(worldAnchor.id)")
                             } else {
-                                print("[Renderer] ✅ Preferred world anchor restored/updated at position: (\(anchorPosition.x), 0.0, \(anchorPosition.z)), yaw: \(yaw * 180 / .pi)°, ID: \(worldAnchor.id)")
+                                print("[Renderer] ✅ Preferred world anchor restored/updated at position: (\(anchorPosition.x), \(floorY), \(anchorPosition.z)), yaw: \(yaw * 180 / .pi)°, ID: \(worldAnchor.id)")
                             }
                         } else {
-                            print("[Renderer] ✅ World anchor cached (fallback) at position: (\(anchorPosition.x), 0.0, \(anchorPosition.z)), yaw: \(yaw * 180 / .pi)°, ID: \(worldAnchor.id)")
+                            print("[Renderer] ✅ World anchor cached (fallback) at position: (\(anchorPosition.x), \(floorY), \(anchorPosition.z)), yaw: \(yaw * 180 / .pi)°, ID: \(worldAnchor.id)")
                         }
                     }
                 case .removed:
