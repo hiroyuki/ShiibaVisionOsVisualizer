@@ -215,7 +215,7 @@ actor Renderer {
                         let wasReplacing = cachedWorldAnchor != nil
                         self.cachedWorldAnchor = worldAnchor
                         
-                        // Extract position from anchor (ignore rotation for now)
+                        // Extract position from anchor
                         let anchorTransform = worldAnchor.originFromAnchorTransform
                         let anchorPosition = SIMD3<Float>(
                             anchorTransform.columns.3.x,
@@ -223,23 +223,27 @@ actor Renderer {
                             anchorTransform.columns.3.z
                         )
                         
-                        // Create identity rotation matrix with anchor position
-                        let identityMatrix = matrix4x4_translation(
-                            anchorPosition.x,
-                            anchorPosition.y,
-                            anchorPosition.z
-                        )
+                        print("[Renderer] 🔍 Anchor transform: \(anchorTransform)")
+                        print("[Renderer] 🔍 Extracted position: \(anchorPosition)")
                         
-                        pointCloudRenderer.modelMatrix = identityMatrix
+                        // Get saved yaw angle from AppModel
+                        let yaw = await appModel.worldAnchorYaw
+                        
+                        // Create transform: Translation * Rotation(Y-axis)
+                        let rotationMatrix = matrix4x4_rotation(radians: yaw, axis: SIMD3<Float>(0, 1, 0))
+                        let translationMatrix = matrix4x4_translation(anchorPosition.x, 0.0, anchorPosition.z)
+                        let matrix = translationMatrix * rotationMatrix
+                        
+                        pointCloudRenderer.modelMatrix = matrix
                         
                         if isPreferredAnchor {
                             if wasReplacing {
-                                print("[Renderer] ✅✅ Preferred anchor REPLACED old cache at position: \(anchorPosition), ID: \(worldAnchor.id)")
+                                print("[Renderer] ✅✅ Preferred anchor REPLACED old cache at position: (\(anchorPosition.x), 0.0, \(anchorPosition.z)), yaw: \(yaw * 180 / .pi)°, ID: \(worldAnchor.id)")
                             } else {
-                                print("[Renderer] ✅ Preferred world anchor restored/updated at position: \(anchorPosition), ID: \(worldAnchor.id)")
+                                print("[Renderer] ✅ Preferred world anchor restored/updated at position: (\(anchorPosition.x), 0.0, \(anchorPosition.z)), yaw: \(yaw * 180 / .pi)°, ID: \(worldAnchor.id)")
                             }
                         } else {
-                            print("[Renderer] ✅ World anchor cached (fallback) at position: \(anchorPosition), ID: \(worldAnchor.id)")
+                            print("[Renderer] ✅ World anchor cached (fallback) at position: (\(anchorPosition.x), 0.0, \(anchorPosition.z)), yaw: \(yaw * 180 / .pi)°, ID: \(worldAnchor.id)")
                         }
                     }
                 case .removed:
@@ -413,7 +417,6 @@ actor Renderer {
                 )
                 
                 // Extract Y-axis rotation from device transform
-                // We need to calculate the yaw angle from the transform matrix
                 let forward = SIMD3<Float>(
                     -deviceTransform.columns.2.x,
                     -deviceTransform.columns.2.y,
@@ -446,15 +449,17 @@ actor Renderer {
                 }
                 
                 if Int.random(in: 0..<240) == 0 {
-                    print("[Renderer] 🎯 Axes at: \(previewPos), yaw: \(yaw * 180 / .pi)°")
+                    print("[Renderer] 🎯 Axes directly below device at: \(previewPos), yaw: \(yaw * 180 / .pi)°")
                 }
                 
                 return (true, matrix)
             }
         } else {
-            // Point cloud mode - use cached world anchor
+            // Point cloud mode - use cached world anchor with Y=0 and saved rotation
             if let worldAnchor = cachedWorldAnchor {
-                let matrix = worldAnchor.originFromAnchorTransform
+                // Matrix is already set in monitorWorldAnchors() with correct rotation
+                // Just return it from pointCloudRenderer
+                let matrix = pointCloudRenderer.modelMatrix
                 
                 if Int.random(in: 0..<240) == 0 {
                     let pos = SIMD3<Float>(matrix.columns.3.x, matrix.columns.3.y, matrix.columns.3.z)

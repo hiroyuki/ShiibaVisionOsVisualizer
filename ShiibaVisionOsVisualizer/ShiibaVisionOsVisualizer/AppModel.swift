@@ -37,6 +37,7 @@ class AppModel {
     // Point cloud placement
     var worldAnchorID: UUID?
     var worldAnchor: WorldAnchor?
+    var worldAnchorYaw: Float = 0.0  // Y軸回転角度（ラジアン）
     
     // Device position tracking (updated every frame from Renderer)
     var devicePosition: SIMD3<Float>?
@@ -128,30 +129,21 @@ class AppModel {
         )
         devicePosition = position
         
-        // Calculate preview position with device orientation
-        // Get forward direction from device transform (negative Z axis in camera space)
-        let forward = SIMD3<Float>(
-            -transform.columns.2.x,
-            -transform.columns.2.y,
-            -transform.columns.2.z
-        )
-        
-        // Calculate preview position: device position + offset in device's forward direction
-        let forwardOffset = forward * abs(previewOffsetFromDevice.z)  // 1.0m forward
-        var preview = position + forwardOffset
+        // Calculate preview position: directly below device (same X, Z, but at floor level)
+        var preview = position
         
         // If floor is detected, place on floor. Otherwise, place 1m below eye level
         if let floorY = detectedFloorY {
             preview.y = floorY
         } else {
-            preview.y = position.y - 1.0  // 1m below device (eye level)
+            preview.y = position.y - 1.5  // 1.5m below device (approximate floor)
         }
         
         previewPosition = preview
         
         // Debug log (throttled)
         if Int.random(in: 0..<240) == 0 {
-            print("[AppModel] Device: \(position), Forward: \(forward), Preview: \(preview), Floor: \(detectedFloorY?.description ?? "nil")")
+            print("[AppModel] Device: \(position), Preview (directly below): \(preview), Floor: \(detectedFloorY?.description ?? "nil")")
         }
     }
     
@@ -234,9 +226,33 @@ class AppModel {
             return
         }
         
-        // Create WorldAnchor at preview position
+        guard let deviceTransform = deviceTransform else {
+            print("[AppModel] ❌ Device transform not available")
+            return
+        }
+        
+        // Calculate yaw angle from device transform
+        let forward = SIMD3<Float>(
+            -deviceTransform.columns.2.x,
+            -deviceTransform.columns.2.y,
+            -deviceTransform.columns.2.z
+        )
+        let forwardXZ = SIMD3<Float>(forward.x, 0, forward.z)
+        let normalizedForwardXZ = normalize(forwardXZ)
+        let yaw = -atan2(normalizedForwardXZ.x, -normalizedForwardXZ.z)
+        
+        // Save yaw for later use
+        worldAnchorYaw = yaw
+        
+        // Use detected floor Y coordinate if available, otherwise use preview position Y
+        let floorY = detectedFloorY ?? finalPosition.y
+        
+        // Create WorldAnchor at preview position with floor Y coordinate
+        // This ensures PLY origin (0,0,0) is placed at the floor level
+        let anchorPosition = SIMD3<Float>(finalPosition.x, floorY, finalPosition.z)
+        
         var transform = matrix_identity_float4x4
-        transform.columns.3 = SIMD4<Float>(finalPosition.x, finalPosition.y, finalPosition.z, 1.0)
+        transform.columns.3 = SIMD4<Float>(anchorPosition.x, anchorPosition.y, anchorPosition.z, 1.0)
         
         let worldAnchor = WorldAnchor(originFromAnchorTransform: transform)
         
@@ -245,7 +261,7 @@ class AppModel {
             saveWorldAnchorID(worldAnchor.id)
             updateWorldAnchor(worldAnchor)  // This sets self.worldAnchor immediately
             print("[AppModel] ✅ WorldAnchor created and saved: \(worldAnchor.id)")
-            print("[AppModel] ✅ Placement confirmed at position: \(finalPosition)")
+            print("[AppModel] ✅ Placement confirmed at position: \(anchorPosition) (floor Y: \(floorY), yaw: \(yaw * 180 / .pi)°)")
             
             // Verify the anchor was added successfully by checking allAnchors
             try? await Task.sleep(for: .milliseconds(500))
