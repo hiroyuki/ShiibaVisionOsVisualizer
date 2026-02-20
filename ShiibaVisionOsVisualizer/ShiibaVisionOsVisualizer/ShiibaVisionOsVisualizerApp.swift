@@ -15,7 +15,8 @@ struct ImmersiveSpaceContent: CompositorContent {
 
     var body: some CompositorContent {
         CompositorLayer(configuration: self) { @MainActor layerRenderer in
-            Renderer.startRenderLoop(layerRenderer, appModel: appModel, arSession: ARKitSession())
+            // Use the shared ARKit session from appModel (no need to create a new one)
+            Renderer.startRenderLoop(layerRenderer, appModel: appModel, arSession: appModel.arSession)
         }
     }
 }
@@ -50,3 +51,4 @@ struct ShiibaVisionOsVisualizerApp: App {
         .immersionStyle(selection: .constant(.mixed), in: .mixed)
     }
 }
+

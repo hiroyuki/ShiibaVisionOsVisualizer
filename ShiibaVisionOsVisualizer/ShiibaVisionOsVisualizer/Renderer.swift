@@ -78,6 +78,9 @@ actor Renderer {
     
     // Cached display mode (updated from main actor)
     var currentDisplayMode: AppModel.DisplayMode = .pointCloud
+    
+    // Cached world anchor for rendering (updated when anchor changes)
+    var cachedWorldAnchor: WorldAnchor?
 
     // Point cloud renderer
     let pointCloudRenderer: PointCloudRenderer
@@ -120,8 +123,8 @@ actor Renderer {
             pointCloudRenderer.modelMatrix = matrix4x4_translation(0, 0, -1.5)
             
             axesRenderer = try AxesRenderer(device: device, layerRenderer: layerRenderer)
-            // Initialize axes at default placement position
-            axesRenderer.modelMatrix = matrix4x4_translation(0, 0, -1.5)
+            // Initialize axes at eye level, 1m in front (visible immediately)
+            axesRenderer.modelMatrix = matrix4x4_translation(0, 0, -1.0)
         } catch {
             fatalError("Unable to create renderers: \(error)")
         }
@@ -140,6 +143,11 @@ actor Renderer {
         // ARKit session is already running in AppModel, just start monitoring
         print("[Renderer] Using shared ARKit session from AppModel")
         
+        // Start floor detection monitoring
+        Task {
+            await startFloorDetection()
+        }
+        
         // Monitor world anchor updates to restore saved anchor (in background)
         Task {
             await monitorWorldAnchors()
@@ -147,12 +155,13 @@ actor Renderer {
     }
     
     private func monitorWorldAnchors() async {
-        guard let savedAnchorID = await appModel.worldAnchorID else {
-            print("[Renderer] No saved anchor ID to monitor")
-            return
-        }
+        let savedAnchorID = await appModel.worldAnchorID
         
-        print("[Renderer] Monitoring for world anchor: \(savedAnchorID)")
+        if let savedAnchorID = savedAnchorID {
+            print("[Renderer] Monitoring for world anchor (preferred ID: \(savedAnchorID))")
+        } else {
+            print("[Renderer] No saved anchor ID, will use first available world anchor")
+        }
         
         for await update in worldTracking.anchorUpdates {
             print("[Renderer] Received anchor update: \(update.anchor.id), event: \(update.event)")
@@ -164,23 +173,74 @@ actor Renderer {
             
             print("[Renderer] WorldAnchor detected: \(worldAnchor.id)")
             
-            // Check if this is our saved anchor
-            if worldAnchor.id == savedAnchorID {
+            // Accept this anchor if:
+            // 1. We don't have a saved anchor ID (use first available)
+            // 2. This matches our saved anchor ID
+            // 3. We don't have a cached anchor yet (use first available in this session)
+            let shouldAccept = savedAnchorID == nil || 
+                              worldAnchor.id == savedAnchorID || 
+                              cachedWorldAnchor == nil
+            
+            if shouldAccept {
                 switch update.event {
                 case .added, .updated:
+                    // Update AppModel with this anchor
                     await appModel.updateWorldAnchor(worldAnchor)
+                    
+                    // Cache the world anchor for rendering
+                    self.cachedWorldAnchor = worldAnchor
                     
                     // Update point cloud renderer's model matrix
                     let transform = worldAnchor.originFromAnchorTransform
                     pointCloudRenderer.modelMatrix = transform
                     
                     let position = SIMD3<Float>(transform.columns.3.x, transform.columns.3.y, transform.columns.3.z)
-                    print("[Renderer] ✅ World anchor restored/updated at position: \(position)")
+                    print("[Renderer] ✅ World anchor restored/updated at position: \(position), ID: \(worldAnchor.id)")
                 case .removed:
                     print("[Renderer] World anchor removed: \(worldAnchor.id)")
+                    if cachedWorldAnchor?.id == worldAnchor.id {
+                        cachedWorldAnchor = nil
+                        print("[Renderer] ⚠️ Cached anchor was removed")
+                    }
                 }
             } else {
-                print("[Renderer] Different anchor ID, expected: \(savedAnchorID), got: \(worldAnchor.id)")
+                print("[Renderer] Ignoring anchor ID: \(worldAnchor.id) (already have cached anchor: \(cachedWorldAnchor?.id.uuidString ?? "none"))")
+            }
+        }
+    }
+    
+    private var lastFloorDetectionTime: TimeInterval = 0
+    private let floorDetectionInterval: TimeInterval = 0.5  // Check every 0.5 seconds
+    
+    // Start monitoring floor planes in background
+    private func startFloorDetection() async {
+        let planeDetection = await appModel.planeDetection
+        
+        print("[Renderer] Starting floor detection monitoring...")
+        
+        Task {
+            for await update in planeDetection.anchorUpdates {
+                guard let planeAnchor = update.anchor as? PlaneAnchor else { continue }
+                
+                // Only consider horizontal planes (floor candidates)
+                if planeAnchor.alignment == .horizontal {
+                    let planeTransform = planeAnchor.originFromAnchorTransform
+                    let planeY = planeTransform.columns.3.y
+                    
+                    print("[Renderer] Horizontal plane detected at Y: \(planeY)")
+                    
+                    // Update floor Y if this is lower or first detection
+                    await MainActor.run {
+                        if appModel.detectedFloorY == nil || planeY < appModel.detectedFloorY! {
+                            appModel.updateDetectedFloor(planeY)
+                        }
+                    }
+                    
+                    // Update cached floor Y for rendering
+                    if cachedFloorY == nil || planeY < cachedFloorY! {
+                        cachedFloorY = planeY
+                    }
+                }
             }
         }
     }
@@ -230,67 +290,131 @@ actor Renderer {
     }
 
     private func updateGameState() {
-        // Get the current modelMatrix from pointCloudRenderer or axesRenderer
-        // It was updated in the previous frame or by monitorWorldAnchors
-        uniforms[0].modelMatrix = pointCloudRenderer.modelMatrix
+        // This is called from renderFrame which is already in the actor context
+        // We need to synchronously access appModel data
         
-        // Cache current mode for comparison
-        let cachedMode = currentDisplayMode
-        
-        // Asynchronously update for next frame
-        Task { @MainActor in
-            // Get new display mode from appModel
-            let newMode = appModel.displayMode
-            
-            // Update cached display mode (back on actor)
-            await updateDisplayMode(newMode)
-            
-            // If switching to point cloud mode and PLY not loaded yet, load it
-            if newMode == .pointCloud && cachedMode == .axesPlacement {
-                if await !pointCloudRenderer.isDataLoaded {
-                    print("[Renderer] Switching to point cloud mode, loading PLY...")
-                    await pointCloudRenderer.loadPLY(named: "shimonju_sf_000001")
-                    print("[Renderer] PLY loaded")
-                }
-            }
-            
-            let newMatrix: matrix_float4x4
-            
-            if appModel.displayMode == .axesPlacement {
-                // Placement mode: use placement position
-                let position = appModel.placementPosition
-                newMatrix = matrix4x4_translation(position.x, position.y, position.z)
-                if Int.random(in: 0..<120) == 0 {
-                    print("[Renderer] Axes placement mode - position: \(position)")
-                }
-            } else if let worldAnchor = appModel.worldAnchor {
-                // Display mode: use world anchor
-                newMatrix = worldAnchor.originFromAnchorTransform
-                let position = SIMD3<Float>(newMatrix.columns.3.x, newMatrix.columns.3.y, newMatrix.columns.3.z)
-                if Int.random(in: 0..<120) == 0 {
-                    print("[Renderer] Display mode - anchor position: \(position)")
-                }
-            } else {
-                // No anchor: use placement position as fallback
-                let position = appModel.placementPosition
-                newMatrix = matrix4x4_translation(position.x, position.y, position.z)
-                if Int.random(in: 0..<120) == 0 {
-                    print("[Renderer] No anchor - using placement position: \(position)")
-                }
-            }
-            
-            await updateModelMatrices(newMatrix)
-        }
+        // For now, just use cached values that are updated elsewhere
+        // The actual matrix updates happen in render() based on current mode
     }
     
     private func updateDisplayMode(_ mode: AppModel.DisplayMode) {
+        if currentDisplayMode != mode {
+            print("[Renderer] 🔄 Display mode changed: \(currentDisplayMode) -> \(mode)")
+            
+            // If switching to point cloud mode, ensure PLY is loaded and cache anchor
+            if mode == .pointCloud && currentDisplayMode == .axesPlacement {
+                Task {
+                    let isLoaded = await pointCloudRenderer.isDataLoaded
+                    if !isLoaded {
+                        print("[Renderer] Loading PLY for point cloud mode...")
+                        await pointCloudRenderer.loadPLY(named: "shimonju_sf_000001")
+                        print("[Renderer] ✅ PLY loaded")
+                    }
+                    
+                    // Cache the world anchor from AppModel
+                    let worldAnchor = await appModel.worldAnchor
+                    if let worldAnchor = worldAnchor {
+                        // Update cache on actor context
+                        await self.setCachedWorldAnchor(worldAnchor)
+                        print("[Renderer] ✅ Cached world anchor for rendering")
+                    }
+                }
+            }
+        }
         currentDisplayMode = mode
+    }
+    
+    // Helper to set cached anchor from async context
+    private func setCachedWorldAnchor(_ anchor: WorldAnchor) {
+        self.cachedWorldAnchor = anchor
     }
     
     private func updateModelMatrices(_ matrix: matrix_float4x4) {
         pointCloudRenderer.modelMatrix = matrix
         axesRenderer.modelMatrix = matrix
+        // Also update uniforms for current frame
+        uniforms[0].modelMatrix = matrix
     }
+    
+    // Synchronous state update - returns (shouldRender, matrix)
+    private func updateRenderState(deviceAnchor: DeviceAnchor?) -> (Bool, matrix_float4x4) {
+        // This runs on the render thread, so we need to be careful with MainActor access
+        // We'll use cached values and update them asynchronously
+        
+        if currentDisplayMode == .axesPlacement {
+            // Axes placement mode
+            if let deviceAnchor = deviceAnchor {
+                let deviceTransform = deviceAnchor.originFromAnchorTransform
+                
+                // Extract device position
+                let devicePosition = SIMD3<Float>(
+                    deviceTransform.columns.3.x,
+                    deviceTransform.columns.3.y,
+                    deviceTransform.columns.3.z
+                )
+                
+                // Extract Y-axis rotation from device transform
+                // We need to calculate the yaw angle from the transform matrix
+                let forward = SIMD3<Float>(
+                    -deviceTransform.columns.2.x,
+                    -deviceTransform.columns.2.y,
+                    -deviceTransform.columns.2.z
+                )
+                
+                // Project forward vector onto XZ plane for yaw calculation
+                let forwardXZ = SIMD3<Float>(forward.x, 0, forward.z)
+                let normalizedForwardXZ = normalize(forwardXZ)
+                
+                // Calculate yaw angle (rotation around Y axis) - negated to match device orientation
+                let yaw = -atan2(normalizedForwardXZ.x, -normalizedForwardXZ.z)
+                
+                // Position: directly below device (same X, Z, but on floor)
+                let previewPos = SIMD3<Float>(
+                    devicePosition.x,
+                    cachedFloorY ?? (devicePosition.y - 1.5),  // Floor or 1.5m below device
+                    devicePosition.z
+                )
+                
+                // Create transform matrix with Y-axis rotation only
+                // Translation * Rotation(Y-axis)
+                let rotationMatrix = matrix4x4_rotation(radians: yaw, axis: SIMD3<Float>(0, 1, 0))
+                let translationMatrix = matrix4x4_translation(previewPos.x, previewPos.y, previewPos.z)
+                let matrix = translationMatrix * rotationMatrix
+                
+                // Update AppModel asynchronously (for UI)
+                Task { @MainActor in
+                    appModel.updateDeviceTransform(deviceTransform)
+                }
+                
+                if Int.random(in: 0..<240) == 0 {
+                    print("[Renderer] 🎯 Axes at: \(previewPos), yaw: \(yaw * 180 / .pi)°")
+                }
+                
+                return (true, matrix)
+            }
+        } else {
+            // Point cloud mode - use cached world anchor
+            if let worldAnchor = cachedWorldAnchor {
+                let matrix = worldAnchor.originFromAnchorTransform
+                
+                if Int.random(in: 0..<240) == 0 {
+                    let pos = SIMD3<Float>(matrix.columns.3.x, matrix.columns.3.y, matrix.columns.3.z)
+                    print("[Renderer] ☁️ PointCloud at: \(pos)")
+                }
+                
+                return (true, matrix)
+            } else {
+                print("[Renderer] ⚠️ No world anchor available for point cloud")
+                return (false, matrix_identity_float4x4)
+            }
+        }
+        
+        // Fallback
+        return (true, matrix4x4_translation(0, 0, -1.0))
+    }
+    
+    // Cache for floor Y coordinate (updated from floor detection)
+    private var cachedFloorY: Float?
 
     func renderFrame() {
         guard let frame = layerRenderer.queryNextFrame() else { return }
@@ -340,6 +464,22 @@ actor Renderer {
         let deviceAnchor = worldTracking.queryDeviceAnchor(atTimestamp: time)
 
         drawable.deviceAnchor = deviceAnchor
+        
+        // Update display mode asynchronously
+        Task { @MainActor in
+            let newMode = appModel.displayMode
+            await self.updateDisplayMode(newMode)
+        }
+        
+        // Synchronously update matrices before rendering
+        let (shouldRender, matrixToUse) = self.updateRenderState(deviceAnchor: deviceAnchor)
+        
+        if shouldRender {
+            // Update matrices immediately
+            self.pointCloudRenderer.modelMatrix = matrixToUse
+            self.axesRenderer.modelMatrix = matrixToUse
+            self.uniforms[0].modelMatrix = matrixToUse
+        }
 
         if perDrawableTarget[drawable.target] == nil {
             perDrawableTarget[drawable.target] = .init(drawable: drawable)
@@ -392,7 +532,9 @@ actor Renderer {
         // Encode appropriate renderer based on cached display mode
         if currentDisplayMode == .axesPlacement {
             // Render axes for placement
-            print("[Renderer] Rendering AXES at mode: \(currentDisplayMode)")
+            if Int.random(in: 0..<240) == 0 {
+                print("[Renderer] 🎯 Rendering Axes (model matrix: \(axesRenderer.modelMatrix))")
+            }
             axesRenderer.encode(
                 commandBuffer: commandBuffer,
                 renderPassDescriptor: renderPassDescriptor,
@@ -405,8 +547,8 @@ actor Renderer {
             )
         } else {
             // Render point cloud
-            if Int.random(in: 0..<120) == 0 {
-                print("[Renderer] Rendering POINT CLOUD at mode: \(currentDisplayMode)")
+            if Int.random(in: 0..<240) == 0 {
+                print("[Renderer] ☁️ Rendering PointCloud (model matrix: \(pointCloudRenderer.modelMatrix))")
             }
             pointCloudRenderer.encode(
                 commandBuffer: commandBuffer,
@@ -547,3 +689,11 @@ nonisolated func matrix4x4_translation(_ translationX: Float, _ translationY: Fl
                            vector_float4(0, 0, 1, 0),
                            vector_float4(translationX, translationY, translationZ, 1)))
 }
+
+nonisolated func matrix4x4_scale(_ x: Float, _ y: Float, _ z: Float) -> matrix_float4x4 {
+    return .init(columns: (vector_float4(x, 0, 0, 0),
+                           vector_float4(0, y, 0, 0),
+                           vector_float4(0, 0, z, 0),
+                           vector_float4(0, 0, 0, 1)))
+}
+

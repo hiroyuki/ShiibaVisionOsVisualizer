@@ -14,6 +14,7 @@ struct ContentView: View {
     @Environment(AppModel.self) private var appModel
     @Environment(\.dismissWindow) private var dismissWindow
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
+    @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
 
     var body: some View {
         VStack(spacing: 20) {
@@ -53,37 +54,126 @@ struct ContentView: View {
                         .foregroundStyle(.secondary)
                 }
                 
+                // Placement preview info (only visible in axes placement mode)
+                if appModel.displayMode == .axesPlacement {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("移動して配置位置を決めてください")
+                            .font(.subheadline)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.primary)
+                        
+                        Divider()
+                        
+                        // Device position
+                        if let devicePos = appModel.devicePosition {
+                            HStack {
+                                Image(systemName: "location.fill")
+                                    .foregroundStyle(.blue)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("現在位置")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                    Text("X: \(String(format: "%.2f", devicePos.x))m  Y: \(String(format: "%.2f", devicePos.y))m  Z: \(String(format: "%.2f", devicePos.z))m")
+                                        .font(.caption)
+                                        .monospaced()
+                                }
+                            }
+                        }
+                        
+                        // Preview position
+                        if let previewPos = appModel.previewPosition {
+                            HStack {
+                                Image(systemName: "scope")
+                                    .foregroundStyle(.green)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("配置位置")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                    Text("X: \(String(format: "%.2f", previewPos.x))m  Y: \(String(format: "%.2f", previewPos.y))m  Z: \(String(format: "%.2f", previewPos.z))m")
+                                        .font(.caption)
+                                        .monospaced()
+                                }
+                            }
+                            
+                            // Distance from device
+                            if let devicePos = appModel.devicePosition {
+                                let distance = length(previewPos - devicePos)
+                                HStack {
+                                    Image(systemName: "ruler")
+                                        .foregroundStyle(.orange)
+                                    Text("距離: \(String(format: "%.2f", distance))m")
+                                        .font(.caption)
+                                }
+                            }
+                        }
+                        
+                        // Floor detection status
+                        if let floorY = appModel.detectedFloorY {
+                            HStack {
+                                Image(systemName: "arrow.down.to.line")
+                                    .foregroundStyle(.purple)
+                                Text("床面検出: Y = \(String(format: "%.2f", floorY))m")
+                                    .font(.caption)
+                            }
+                        } else {
+                            HStack {
+                                Image(systemName: "exclamationmark.triangle")
+                                    .foregroundStyle(.yellow)
+                                Text("床面を検出中...")
+                                    .font(.caption)
+                            }
+                        }
+                        
+                        Divider()
+                        
+                        // Confirm placement button
+                        Button {
+                            Task {
+                                await appModel.confirmPlacementAtCurrentPosition()
+                                // Close immersive space and return to window
+                                await dismissImmersiveSpace()
+                                print("[ContentView] ✅ Returned to window - Start button is now enabled")
+                            }
+                        } label: {
+                            Label("ここに決定", systemImage: "checkmark.circle.fill")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                        .disabled(appModel.previewPosition == nil)
+                    }
+                    .padding()
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                }
+                
                 Button {
                     Task {
                         if appModel.immersiveSpaceState == .open {
                             // Already in immersive space
                             if appModel.displayMode == .axesPlacement {
-                                // Confirm placement and save WorldAnchor
-                                await appModel.confirmPlacement()
+                                // Already in placement mode - do nothing (use "ここに決定" button above)
+                                return
                             } else {
                                 // Enter axes placement mode
-                                appModel.enterAxesPlacementMode()
+                                await appModel.enterAxesPlacementMode()
                             }
                         } else {
                             // Open immersive space in placement mode
-                            appModel.enterAxesPlacementMode()
+                            await appModel.enterAxesPlacementMode()
                             await openImmersiveSpace(id: appModel.immersiveSpaceID)
                         }
                     }
                 } label: {
-                    if appModel.displayMode == .axesPlacement {
-                        Label("Confirm Placement", systemImage: "checkmark.circle")
-                    } else {
-                        Label(appModel.worldAnchorID == nil ? "Set Anchor Position" : "Update Anchor Position",
-                              systemImage: "location.circle")
-                    }
+                    Label(appModel.worldAnchorID == nil ? "アンカー位置を設定" : "アンカー位置を更新",
+                          systemImage: "location.circle")
                 }
+                .disabled(appModel.displayMode == .axesPlacement)  // Disable while in placement mode
                 
                 if appModel.worldAnchorID != nil {
                     Button(role: .destructive) {
                         appModel.clearAnchor()
                     } label: {
-                        Label("Clear Anchor", systemImage: "trash")
+                        Label("アンカーをクリア", systemImage: "trash")
                     }
                     .buttonStyle(.borderless)
                 }
@@ -99,7 +189,8 @@ struct ContentView: View {
 //            #endif
         }
         .onChange(of: appModel.immersiveSpaceState) { _, newState in
-            if newState == .open {
+            // Dismiss window when starting point cloud display (not in axes placement mode)
+            if newState == .open && appModel.displayMode == .pointCloud {
                 dismissWindow()
             }
         }
