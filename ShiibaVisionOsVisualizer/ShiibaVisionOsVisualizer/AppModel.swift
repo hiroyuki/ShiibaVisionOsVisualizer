@@ -21,8 +21,12 @@ class AppModel {
     }
     var immersiveSpaceState = ImmersiveSpaceState.closed
     
-    // Placement mode state
-    var isInPlacementMode = false
+    // Display mode
+    enum DisplayMode {
+        case pointCloud      // Display point cloud at saved anchor
+        case axesPlacement   // Display draggable axes for anchor placement
+    }
+    var displayMode: DisplayMode = .pointCloud
     
     // Shared ARKit session and providers
     let arSession = ARKitSession()
@@ -82,14 +86,14 @@ class AppModel {
         print("[AppModel] Cleared anchor")
     }
     
-    func startPlacementMode() {
-        isInPlacementMode = true
-        print("[AppModel] Started placement mode")
+    func enterAxesPlacementMode() {
+        displayMode = .axesPlacement
+        print("[AppModel] Entered axes placement mode")
     }
     
-    func finishPlacementMode() {
-        isInPlacementMode = false
-        print("[AppModel] Finished placement mode")
+    func enterPointCloudMode() {
+        displayMode = .pointCloud
+        print("[AppModel] Entered point cloud mode")
     }
     
     func confirmPlacement() async {
@@ -103,7 +107,7 @@ class AppModel {
             try await worldTracking.addAnchor(worldAnchor)
             saveWorldAnchorID(worldAnchor.id)
             updateWorldAnchor(worldAnchor)
-            finishPlacementMode()
+            enterPointCloudMode()
             print("[AppModel] Placement confirmed and WorldAnchor saved: \(worldAnchor.id)")
         } catch {
             print("[AppModel] Failed to save WorldAnchor: \(error)")

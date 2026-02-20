@@ -75,9 +75,15 @@ actor Renderer {
     let worldTracking: WorldTrackingProvider
     let layerRenderer: LayerRenderer
     let appModel: AppModel
+    
+    // Cached display mode (updated from main actor)
+    var currentDisplayMode: AppModel.DisplayMode = .pointCloud
 
     // Point cloud renderer
     let pointCloudRenderer: PointCloudRenderer
+    
+    // Axes renderer for placement mode
+    let axesRenderer: AxesRenderer
 
     init(_ layerRenderer: LayerRenderer, appModel: AppModel) {
         self.layerRenderer = layerRenderer
@@ -112,8 +118,12 @@ actor Renderer {
             pointCloudRenderer = try PointCloudRenderer(device: device, layerRenderer: layerRenderer)
             // Initialize with default placement position
             pointCloudRenderer.modelMatrix = matrix4x4_translation(0, 0, -1.5)
+            
+            axesRenderer = try AxesRenderer(device: device, layerRenderer: layerRenderer)
+            // Initialize axes at default placement position
+            axesRenderer.modelMatrix = matrix4x4_translation(0, 0, -1.5)
         } catch {
-            fatalError("Unable to create PointCloudRenderer: \(error)")
+            fatalError("Unable to create renderers: \(error)")
         }
 
         #if !targetEnvironment(simulator)
@@ -181,12 +191,26 @@ actor Renderer {
         Task(executorPreference: RendererTaskExecutor.shared) {
             print("[Renderer] Creating renderer...")
             let renderer = Renderer(layerRenderer, appModel: appModel)
+            
+            // Set initial display mode
+            let initialMode = await appModel.displayMode
+            await renderer.updateDisplayMode(initialMode)
+            print("[Renderer] Initial display mode: \(initialMode)")
+            
             print("[Renderer] Starting AR session...")
             await renderer.startARSession(arSession)
-            // Load PLY asynchronously; rendering begins immediately (no points shown until loaded)
-            print("[Renderer] Loading PLY file...")
-            await renderer.pointCloudRenderer.loadPLY(named: "shimonju_sf_000001")
-            print("[Renderer] PLY file loaded, starting render loop")
+            
+            // Load PLY asynchronously only if we're in point cloud mode
+            // (will be loaded later if user switches to point cloud mode)
+            if await appModel.displayMode == .pointCloud {
+                print("[Renderer] Loading PLY file...")
+                await renderer.pointCloudRenderer.loadPLY(named: "shimonju_sf_000001")
+                print("[Renderer] PLY file loaded")
+            } else {
+                print("[Renderer] Axes placement mode, skipping PLY load for now")
+            }
+            
+            print("[Renderer] Starting render loop")
             await renderer.renderLoop()
         }
     }
@@ -206,20 +230,38 @@ actor Renderer {
     }
 
     private func updateGameState() {
-        // Get the current modelMatrix from pointCloudRenderer
+        // Get the current modelMatrix from pointCloudRenderer or axesRenderer
         // It was updated in the previous frame or by monitorWorldAnchors
         uniforms[0].modelMatrix = pointCloudRenderer.modelMatrix
         
+        // Cache current mode for comparison
+        let cachedMode = currentDisplayMode
+        
         // Asynchronously update for next frame
         Task { @MainActor in
+            // Get new display mode from appModel
+            let newMode = appModel.displayMode
+            
+            // Update cached display mode (back on actor)
+            await updateDisplayMode(newMode)
+            
+            // If switching to point cloud mode and PLY not loaded yet, load it
+            if newMode == .pointCloud && cachedMode == .axesPlacement {
+                if await !pointCloudRenderer.isDataLoaded {
+                    print("[Renderer] Switching to point cloud mode, loading PLY...")
+                    await pointCloudRenderer.loadPLY(named: "shimonju_sf_000001")
+                    print("[Renderer] PLY loaded")
+                }
+            }
+            
             let newMatrix: matrix_float4x4
             
-            if appModel.isInPlacementMode {
+            if appModel.displayMode == .axesPlacement {
                 // Placement mode: use placement position
                 let position = appModel.placementPosition
                 newMatrix = matrix4x4_translation(position.x, position.y, position.z)
                 if Int.random(in: 0..<120) == 0 {
-                    print("[Renderer] Placement mode - position: \(position)")
+                    print("[Renderer] Axes placement mode - position: \(position)")
                 }
             } else if let worldAnchor = appModel.worldAnchor {
                 // Display mode: use world anchor
@@ -237,8 +279,17 @@ actor Renderer {
                 }
             }
             
-            pointCloudRenderer.modelMatrix = newMatrix
+            await updateModelMatrices(newMatrix)
         }
+    }
+    
+    private func updateDisplayMode(_ mode: AppModel.DisplayMode) {
+        currentDisplayMode = mode
+    }
+    
+    private func updateModelMatrices(_ matrix: matrix_float4x4) {
+        pointCloudRenderer.modelMatrix = matrix
+        axesRenderer.modelMatrix = matrix
     }
 
     func renderFrame() {
@@ -338,18 +389,37 @@ actor Renderer {
 
         let viewports = drawable.views.map { $0.textureMap.viewport }
 
-        // Encode point cloud compute + render
-        pointCloudRenderer.encode(
-            commandBuffer:        commandBuffer,
-            renderPassDescriptor: renderPassDescriptor,
-            uniforms:             uniforms[0],
-            uniformsBuffer:       dynamicUniformBuffer,
-            uniformsOffset:       uniformBufferOffset,
-            viewProjectionBuffer: drawableTarget.viewProjectionBuffer,
-            viewProjectionOffset: drawableTarget.viewProjectionBufferOffset,
-            viewports:            viewports,
-            viewCount:            drawable.views.count
-        )
+        // Encode appropriate renderer based on cached display mode
+        if currentDisplayMode == .axesPlacement {
+            // Render axes for placement
+            print("[Renderer] Rendering AXES at mode: \(currentDisplayMode)")
+            axesRenderer.encode(
+                commandBuffer: commandBuffer,
+                renderPassDescriptor: renderPassDescriptor,
+                uniformsBuffer: dynamicUniformBuffer,
+                uniformsOffset: uniformBufferOffset,
+                viewProjectionBuffer: drawableTarget.viewProjectionBuffer,
+                viewProjectionOffset: drawableTarget.viewProjectionBufferOffset,
+                viewports: viewports,
+                viewCount: drawable.views.count
+            )
+        } else {
+            // Render point cloud
+            if Int.random(in: 0..<120) == 0 {
+                print("[Renderer] Rendering POINT CLOUD at mode: \(currentDisplayMode)")
+            }
+            pointCloudRenderer.encode(
+                commandBuffer: commandBuffer,
+                renderPassDescriptor: renderPassDescriptor,
+                uniforms: uniforms[0],
+                uniformsBuffer: dynamicUniformBuffer,
+                uniformsOffset: uniformBufferOffset,
+                viewProjectionBuffer: drawableTarget.viewProjectionBuffer,
+                viewProjectionOffset: drawableTarget.viewProjectionBufferOffset,
+                viewports: viewports,
+                viewCount: drawable.views.count
+            )
+        }
 
         drawable.encodePresent(commandBuffer: commandBuffer)
     }

@@ -33,6 +33,11 @@ final class PointCloudRenderer {
 
     private var pointCloudData: PointCloudData?
     private var isConverted = false  // compute shader has run once
+    
+    /// Check if point cloud data has been loaded
+    var isDataLoaded: Bool {
+        pointCloudData != nil
+    }
 
     // MARK: - Placement
 

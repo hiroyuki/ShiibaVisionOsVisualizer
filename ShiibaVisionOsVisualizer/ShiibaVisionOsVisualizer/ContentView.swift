@@ -22,15 +22,29 @@ struct ContentView: View {
 
             Text("Hello, world!")
 
-            // 既存のトグルボタン
-            ToggleImmersiveSpaceButton()
+            // Start button - Display point cloud at saved anchor
+            Button {
+                Task {
+                    if appModel.immersiveSpaceState == .open {
+                        // Already open, just ensure we're in point cloud mode
+                        appModel.enterPointCloudMode()
+                    } else {
+                        // Open immersive space and show point cloud
+                        appModel.enterPointCloudMode()
+                        await openImmersiveSpace(id: appModel.immersiveSpaceID)
+                    }
+                }
+            } label: {
+                Label("Start", systemImage: "play.fill")
+            }
+            .disabled(appModel.worldAnchorID == nil)
             
             Divider()
                 .padding(.horizontal)
             
-            // Point Cloud配置モードボタン
+            // World Anchor Placement button
             VStack(spacing: 12) {
-                Text("Point Cloud Placement")
+                Text("World Anchor Placement")
                     .font(.headline)
                 
                 if let anchorID = appModel.worldAnchorID {
@@ -43,21 +57,21 @@ struct ContentView: View {
                     Task {
                         if appModel.immersiveSpaceState == .open {
                             // Already in immersive space
-                            if appModel.isInPlacementMode {
+                            if appModel.displayMode == .axesPlacement {
                                 // Confirm placement and save WorldAnchor
                                 await appModel.confirmPlacement()
                             } else {
-                                // Enter placement mode
-                                appModel.startPlacementMode()
+                                // Enter axes placement mode
+                                appModel.enterAxesPlacementMode()
                             }
                         } else {
                             // Open immersive space in placement mode
-                            appModel.startPlacementMode()
+                            appModel.enterAxesPlacementMode()
                             await openImmersiveSpace(id: appModel.immersiveSpaceID)
                         }
                     }
                 } label: {
-                    if appModel.isInPlacementMode {
+                    if appModel.displayMode == .axesPlacement {
                         Label("Confirm Placement", systemImage: "checkmark.circle")
                     } else {
                         Label(appModel.worldAnchorID == nil ? "Set Anchor Position" : "Update Anchor Position",
