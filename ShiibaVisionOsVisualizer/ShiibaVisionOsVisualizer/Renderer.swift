@@ -163,6 +163,20 @@ actor Renderer {
             print("[Renderer] No saved anchor ID, will use first available world anchor")
         }
         
+        // Track if we've found the preferred anchor
+        var foundPreferredAnchor = false
+        var anchorSearchTimeout: Task<Void, Never>? = nil
+        
+        // If we have a preferred anchor, start a timeout to use fallback if not found
+        if savedAnchorID != nil {
+            anchorSearchTimeout = Task {
+                try? await Task.sleep(for: .seconds(5))
+                if !foundPreferredAnchor && cachedWorldAnchor == nil {
+                    print("[Renderer] ⏰ Timeout waiting for preferred anchor, will use any available anchor as fallback")
+                }
+            }
+        }
+        
         for await update in worldTracking.anchorUpdates {
             print("[Renderer] Received anchor update: \(update.anchor.id), event: \(update.event)")
             
@@ -173,13 +187,22 @@ actor Renderer {
             
             print("[Renderer] WorldAnchor detected: \(worldAnchor.id)")
             
-            // Accept this anchor if:
-            // 1. We don't have a saved anchor ID (use first available)
-            // 2. This matches our saved anchor ID
-            // 3. We don't have a cached anchor yet (use first available in this session)
-            let shouldAccept = savedAnchorID == nil || 
-                              worldAnchor.id == savedAnchorID || 
-                              cachedWorldAnchor == nil
+            // Determine if we should accept this anchor
+            let isPreferredAnchor = savedAnchorID != nil && worldAnchor.id == savedAnchorID
+            
+            if isPreferredAnchor {
+                foundPreferredAnchor = true
+                anchorSearchTimeout?.cancel()
+            }
+            
+            // Accept anchor if:
+            // 1. It's the preferred anchor (ALWAYS accept - will replace cache)
+            // 2. No cache yet and no saved ID (use first available)
+            let shouldAccept = isPreferredAnchor || 
+                              (cachedWorldAnchor == nil && savedAnchorID == nil)
+            
+            // Preferred anchor ALWAYS replaces cache
+            let shouldReplaceCache = isPreferredAnchor || cachedWorldAnchor == nil
             
             if shouldAccept {
                 switch update.event {
@@ -187,24 +210,52 @@ actor Renderer {
                     // Update AppModel with this anchor
                     await appModel.updateWorldAnchor(worldAnchor)
                     
-                    // Cache the world anchor for rendering
-                    self.cachedWorldAnchor = worldAnchor
-                    
-                    // Update point cloud renderer's model matrix
-                    let transform = worldAnchor.originFromAnchorTransform
-                    pointCloudRenderer.modelMatrix = transform
-                    
-                    let position = SIMD3<Float>(transform.columns.3.x, transform.columns.3.y, transform.columns.3.z)
-                    print("[Renderer] ✅ World anchor restored/updated at position: \(position), ID: \(worldAnchor.id)")
+                    // Cache the world anchor for rendering (preferred anchor replaces cache)
+                    if shouldReplaceCache {
+                        let wasReplacing = cachedWorldAnchor != nil
+                        self.cachedWorldAnchor = worldAnchor
+                        
+                        // Extract position from anchor (ignore rotation for now)
+                        let anchorTransform = worldAnchor.originFromAnchorTransform
+                        let anchorPosition = SIMD3<Float>(
+                            anchorTransform.columns.3.x,
+                            anchorTransform.columns.3.y,
+                            anchorTransform.columns.3.z
+                        )
+                        
+                        // Create identity rotation matrix with anchor position
+                        let identityMatrix = matrix4x4_translation(
+                            anchorPosition.x,
+                            anchorPosition.y,
+                            anchorPosition.z
+                        )
+                        
+                        pointCloudRenderer.modelMatrix = identityMatrix
+                        
+                        if isPreferredAnchor {
+                            if wasReplacing {
+                                print("[Renderer] ✅✅ Preferred anchor REPLACED old cache at position: \(anchorPosition), ID: \(worldAnchor.id)")
+                            } else {
+                                print("[Renderer] ✅ Preferred world anchor restored/updated at position: \(anchorPosition), ID: \(worldAnchor.id)")
+                            }
+                        } else {
+                            print("[Renderer] ✅ World anchor cached (fallback) at position: \(anchorPosition), ID: \(worldAnchor.id)")
+                        }
+                    }
                 case .removed:
                     print("[Renderer] World anchor removed: \(worldAnchor.id)")
                     if cachedWorldAnchor?.id == worldAnchor.id {
                         cachedWorldAnchor = nil
                         print("[Renderer] ⚠️ Cached anchor was removed")
+                        foundPreferredAnchor = false
                     }
                 }
             } else {
-                print("[Renderer] Ignoring anchor ID: \(worldAnchor.id) (already have cached anchor: \(cachedWorldAnchor?.id.uuidString ?? "none"))")
+                if cachedWorldAnchor != nil {
+                    print("[Renderer] Ignoring anchor ID: \(worldAnchor.id) (already have cached anchor: \(cachedWorldAnchor?.id.uuidString ?? "none"))")
+                } else {
+                    print("[Renderer] Waiting for preferred anchor, ignoring: \(worldAnchor.id)")
+                }
             }
         }
     }
@@ -256,6 +307,14 @@ actor Renderer {
             let initialMode = await appModel.displayMode
             await renderer.updateDisplayMode(initialMode)
             print("[Renderer] Initial display mode: \(initialMode)")
+            
+            // Initialize cached world anchor from AppModel if available
+            if let existingAnchor = await appModel.worldAnchor {
+                await renderer.setCachedWorldAnchor(existingAnchor)
+                print("[Renderer] ✅ Initialized with existing world anchor: \(existingAnchor.id)")
+            } else {
+                print("[Renderer] ℹ️ No existing world anchor to cache")
+            }
             
             print("[Renderer] Starting AR session...")
             await renderer.startARSession(arSession)

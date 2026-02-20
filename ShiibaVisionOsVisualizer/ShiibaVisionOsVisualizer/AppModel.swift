@@ -163,11 +163,48 @@ class AppModel {
     func removeAllWorldAnchors() async {
         print("[AppModel] 🗑️ Removing all existing WorldAnchors...")
         
+        // Wait for ARKit session to be fully running
+        if !isARSessionRunning {
+            print("[AppModel] ⚠️ ARKit session not running yet, waiting...")
+            // Wait a bit for session to start
+            try? await Task.sleep(for: .milliseconds(500))
+            
+            // Check again
+            if !isARSessionRunning {
+                print("[AppModel] ⚠️ ARKit session still not running, skipping anchor removal")
+                return
+            }
+        }
+        
+        // Wait for world tracking provider to be ready
+        // Query device anchor to ensure provider is running
+        var retryCount = 0
+        let maxRetries = 10
+        
+        while retryCount < maxRetries {
+            if worldTracking.queryDeviceAnchor(atTimestamp: CACurrentMediaTime()) != nil {
+                // Provider is ready
+                print("[AppModel] ✅ World tracking provider is ready")
+                break
+            }
+            
+            print("[AppModel] ⏳ Waiting for world tracking provider... (\(retryCount + 1)/\(maxRetries))")
+            try? await Task.sleep(for: .milliseconds(200))
+            retryCount += 1
+        }
+        
+        if retryCount >= maxRetries {
+            print("[AppModel] ⚠️ World tracking provider not ready after \(maxRetries) retries, skipping anchor removal")
+            return
+        }
+        
         // Get all anchors from worldTracking
         guard let allAnchors = await worldTracking.allAnchors else {
             print("[AppModel] ℹ️ No anchors to remove")
             return
         }
+        
+        print("[AppModel] 📋 Found \(allAnchors.count) total anchor(s)")
         
         var removedCount = 0
         for anchor in allAnchors {
@@ -185,6 +222,8 @@ class AppModel {
         // Clear cached state
         worldAnchorID = nil
         worldAnchor = nil
+        UserDefaults.standard.removeObject(forKey: "pointCloudWorldAnchorID")
+        UserDefaults.standard.synchronize()
         
         print("[AppModel] ✅ Removed \(removedCount) WorldAnchor(s)")
     }
@@ -207,6 +246,21 @@ class AppModel {
             updateWorldAnchor(worldAnchor)  // This sets self.worldAnchor immediately
             print("[AppModel] ✅ WorldAnchor created and saved: \(worldAnchor.id)")
             print("[AppModel] ✅ Placement confirmed at position: \(finalPosition)")
+            
+            // Verify the anchor was added successfully by checking allAnchors
+            try? await Task.sleep(for: .milliseconds(500))
+            if let allAnchors = await worldTracking.allAnchors {
+                let anchorExists = allAnchors.contains { anchor in
+                    guard let wa = anchor as? WorldAnchor else { return false }
+                    return wa.id == worldAnchor.id
+                }
+                
+                if anchorExists {
+                    print("[AppModel] ✅ Verified: New anchor is being tracked by ARKit")
+                } else {
+                    print("[AppModel] ⚠️ Warning: New anchor not found in ARKit's tracked anchors")
+                }
+            }
             
             // Don't enter point cloud mode - return to window instead
             // Point cloud mode will be entered when user presses "Start"
