@@ -13,15 +13,69 @@ struct ContentView: View {
 
     @Environment(AppModel.self) private var appModel
     @Environment(\.dismissWindow) private var dismissWindow
+    @Environment(\.openImmersiveSpace) private var openImmersiveSpace
 
     var body: some View {
-        VStack {
+        VStack(spacing: 20) {
             Model3D(named: "Scene", bundle: realityKitContentBundle)
                 .padding(.bottom, 50)
 
             Text("Hello, world!")
 
+            // 既存のトグルボタン
             ToggleImmersiveSpaceButton()
+            
+            Divider()
+                .padding(.horizontal)
+            
+            // Point Cloud配置モードボタン
+            VStack(spacing: 12) {
+                Text("Point Cloud Placement")
+                    .font(.headline)
+                
+                if let anchorID = appModel.worldAnchorID {
+                    Text("Anchor ID: \(anchorID.uuidString.prefix(8))...")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                
+                Button {
+                    Task {
+                        if appModel.immersiveSpaceState == .open {
+                            // Already in immersive space
+                            if appModel.isInPlacementMode {
+                                // Confirm placement and save WorldAnchor
+                                await appModel.confirmPlacement()
+                            } else {
+                                // Enter placement mode
+                                appModel.startPlacementMode()
+                            }
+                        } else {
+                            // Open immersive space in placement mode
+                            appModel.startPlacementMode()
+                            await openImmersiveSpace(id: appModel.immersiveSpaceID)
+                        }
+                    }
+                } label: {
+                    if appModel.isInPlacementMode {
+                        Label("Confirm Placement", systemImage: "checkmark.circle")
+                    } else {
+                        Label(appModel.worldAnchorID == nil ? "Set Anchor Position" : "Update Anchor Position",
+                              systemImage: "location.circle")
+                    }
+                }
+                
+                if appModel.worldAnchorID != nil {
+                    Button(role: .destructive) {
+                        appModel.clearAnchor()
+                    } label: {
+                        Label("Clear Anchor", systemImage: "trash")
+                    }
+                    .buttonStyle(.borderless)
+                }
+            }
+            .padding()
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
         }
         .padding()
         .onAppear {

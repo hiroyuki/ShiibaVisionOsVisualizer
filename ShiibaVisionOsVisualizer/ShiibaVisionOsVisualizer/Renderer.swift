@@ -83,6 +83,9 @@ actor Renderer {
         self.layerRenderer = layerRenderer
         self.device = layerRenderer.device
         self.appModel = appModel
+        
+        // Use shared world tracking from appModel
+        self.worldTracking = appModel.worldTracking
 
         let device = self.device
         self.commandQueue = self.device.makeCommandQueue()!
@@ -107,6 +110,8 @@ actor Renderer {
 
         do {
             pointCloudRenderer = try PointCloudRenderer(device: device, layerRenderer: layerRenderer)
+            // Initialize with default placement position
+            pointCloudRenderer.modelMatrix = matrix4x4_translation(0, 0, -1.5)
         } catch {
             fatalError("Unable to create PointCloudRenderer: \(error)")
         }
@@ -119,25 +124,69 @@ actor Renderer {
         commandQueueResidencySet = residencySet
         commandQueue.addResidencySet(residencySet)
         #endif
-
-        worldTracking = WorldTrackingProvider()
     }
 
     private func startARSession(_ arSession: ARKitSession) async {
-        do {
-            try await arSession.run([worldTracking])
-        } catch {
-            fatalError("Failed to initialize ARSession")
+        // ARKit session is already running in AppModel, just start monitoring
+        print("[Renderer] Using shared ARKit session from AppModel")
+        
+        // Monitor world anchor updates to restore saved anchor (in background)
+        Task {
+            await monitorWorldAnchors()
+        }
+    }
+    
+    private func monitorWorldAnchors() async {
+        guard let savedAnchorID = await appModel.worldAnchorID else {
+            print("[Renderer] No saved anchor ID to monitor")
+            return
+        }
+        
+        print("[Renderer] Monitoring for world anchor: \(savedAnchorID)")
+        
+        for await update in worldTracking.anchorUpdates {
+            print("[Renderer] Received anchor update: \(update.anchor.id), event: \(update.event)")
+            
+            guard let worldAnchor = update.anchor as? WorldAnchor else {
+                print("[Renderer] Anchor is not a WorldAnchor, skipping")
+                continue
+            }
+            
+            print("[Renderer] WorldAnchor detected: \(worldAnchor.id)")
+            
+            // Check if this is our saved anchor
+            if worldAnchor.id == savedAnchorID {
+                switch update.event {
+                case .added, .updated:
+                    await appModel.updateWorldAnchor(worldAnchor)
+                    
+                    // Update point cloud renderer's model matrix
+                    let transform = worldAnchor.originFromAnchorTransform
+                    pointCloudRenderer.modelMatrix = transform
+                    
+                    let position = SIMD3<Float>(transform.columns.3.x, transform.columns.3.y, transform.columns.3.z)
+                    print("[Renderer] ✅ World anchor restored/updated at position: \(position)")
+                case .removed:
+                    print("[Renderer] World anchor removed: \(worldAnchor.id)")
+                }
+            } else {
+                print("[Renderer] Different anchor ID, expected: \(savedAnchorID), got: \(worldAnchor.id)")
+            }
         }
     }
 
     @MainActor
     static func startRenderLoop(_ layerRenderer: LayerRenderer, appModel: AppModel, arSession: ARKitSession) {
+        print("[Renderer] startRenderLoop called")
         Task(executorPreference: RendererTaskExecutor.shared) {
+            print("[Renderer] Creating renderer...")
             let renderer = Renderer(layerRenderer, appModel: appModel)
+            print("[Renderer] Starting AR session...")
             await renderer.startARSession(arSession)
             // Load PLY asynchronously; rendering begins immediately (no points shown until loaded)
+            print("[Renderer] Loading PLY file...")
             await renderer.pointCloudRenderer.loadPLY(named: "shimonju_sf_000001")
+            print("[Renderer] PLY file loaded, starting render loop")
             await renderer.renderLoop()
         }
     }
@@ -157,10 +206,39 @@ actor Renderer {
     }
 
     private func updateGameState() {
-        // Place the point cloud at the world origin.
-        // The model matrix is identity so the point cloud sits at (0,0,0).
-        // Floor detection will update pointCloudRenderer.modelMatrix in a future step.
+        // Get the current modelMatrix from pointCloudRenderer
+        // It was updated in the previous frame or by monitorWorldAnchors
         uniforms[0].modelMatrix = pointCloudRenderer.modelMatrix
+        
+        // Asynchronously update for next frame
+        Task { @MainActor in
+            let newMatrix: matrix_float4x4
+            
+            if appModel.isInPlacementMode {
+                // Placement mode: use placement position
+                let position = appModel.placementPosition
+                newMatrix = matrix4x4_translation(position.x, position.y, position.z)
+                if Int.random(in: 0..<120) == 0 {
+                    print("[Renderer] Placement mode - position: \(position)")
+                }
+            } else if let worldAnchor = appModel.worldAnchor {
+                // Display mode: use world anchor
+                newMatrix = worldAnchor.originFromAnchorTransform
+                let position = SIMD3<Float>(newMatrix.columns.3.x, newMatrix.columns.3.y, newMatrix.columns.3.z)
+                if Int.random(in: 0..<120) == 0 {
+                    print("[Renderer] Display mode - anchor position: \(position)")
+                }
+            } else {
+                // No anchor: use placement position as fallback
+                let position = appModel.placementPosition
+                newMatrix = matrix4x4_translation(position.x, position.y, position.z)
+                if Int.random(in: 0..<120) == 0 {
+                    print("[Renderer] No anchor - using placement position: \(position)")
+                }
+            }
+            
+            pointCloudRenderer.modelMatrix = newMatrix
+        }
     }
 
     func renderFrame() {
@@ -277,6 +355,7 @@ actor Renderer {
     }
 
     func renderLoop() {
+        print("render loop started")
         while true {
             if layerRenderer.state == .invalidated {
                 print("Layer is invalidated")
