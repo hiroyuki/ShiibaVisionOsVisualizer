@@ -7,6 +7,7 @@
 
 import ARKit
 import CompositorServices
+import Foundation
 import Metal
 import simd
 
@@ -38,6 +39,12 @@ final class PointCloudRenderer {
     var isDataLoaded: Bool {
         pointCloudData != nil
     }
+
+    // MARK: - Animation
+
+    private var animationTask: Task<Void, Never>?
+    private let pendingLock = NSLock()
+    private var _pendingFrame: PointCloudData? = nil
 
     // MARK: - Placement
 
@@ -105,6 +112,60 @@ final class PointCloudRenderer {
         }
     }
 
+    /// 連番PLYアニメーション開始（ループ再生）
+    func startAnimation(frameURLs: [URL]) {
+        stopAnimation()
+        guard !frameURLs.isEmpty else { return }
+
+        animationTask = Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self else { return }
+            let clock = ContinuousClock()
+            let frameDuration = Duration.milliseconds(33)  // 30fps
+            let loader = PLYLoader()
+            var frameIndex = 0
+
+            while !Task.isCancelled {
+                let deadline = clock.now + frameDuration
+                let url = frameURLs[frameIndex % frameURLs.count]
+
+                do {
+                    let data = try await loader.load(url: url, device: self.device)
+                    self.pendingLock.withLock { self._pendingFrame = data }
+                } catch {
+                    if !Task.isCancelled {
+                        print("[PCR] Frame \(frameIndex) load failed: \(error)")
+                    }
+                }
+
+                frameIndex += 1
+                if clock.now < deadline {
+                    try? await Task.sleep(until: deadline, clock: clock)
+                }
+            }
+        }
+        print("[PCR] Animation started: \(frameURLs.count) frames")
+    }
+
+    /// アニメーション停止
+    func stopAnimation() {
+        animationTask?.cancel()
+        animationTask = nil
+        pendingLock.withLock { _pendingFrame = nil }
+    }
+
+    /// 単一フレームをURLからロード（シミュレーター用フォールバック）
+    func loadSingleFrame(url: URL) async {
+        let loader = PLYLoader()
+        do {
+            let data = try await loader.load(url: url, device: device)
+            pointCloudData = data
+            isConverted = false
+            print("[PCR] Single frame loaded: \(url.lastPathComponent)")
+        } catch {
+            print("[PCR] Single frame load failed: \(error)")
+        }
+    }
+
     // MARK: - Per-frame encoding
 
     /// Encodes compute + render commands into the given command buffer.
@@ -120,6 +181,13 @@ final class PointCloudRenderer {
         viewports: [MTLViewport],
         viewCount: Int
     ) {
+        // 新フレームが届いていれば取り込む
+        let next: PointCloudData? = pendingLock.withLock {
+            defer { _pendingFrame = nil }
+            return _pendingFrame
+        }
+        if let next { pointCloudData = next; isConverted = false }
+
         guard let data = pointCloudData else { return }
 
         // Step 1: Compute pass (Unity → VisionOS conversion)

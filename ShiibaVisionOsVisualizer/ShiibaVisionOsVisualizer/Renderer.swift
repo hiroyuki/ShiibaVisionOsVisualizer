@@ -81,6 +81,9 @@ actor Renderer {
     
     // Cached world anchor for rendering (updated when anchor changes)
     var cachedWorldAnchor: WorldAnchor?
+    
+    // Cached simulator flag
+    var isRunningOnSimulator: Bool = false
 
     // Point cloud renderer
     let pointCloudRenderer: PointCloudRenderer
@@ -141,6 +144,18 @@ actor Renderer {
     }
 
     private func startARSession(_ arSession: ARKitSession) async {
+        // Check if running on simulator
+        if isRunningOnSimulator {
+            print("[Renderer] 🖥️ Running on simulator - skipping ARKit monitoring")
+            
+            // Set up fake anchor for simulator
+            let fakeTransform = await appModel.simulatorFakeAnchorTransform
+            pointCloudRenderer.modelMatrix = fakeTransform
+            
+            print("[Renderer] 🖥️ Simulator mode: Point cloud fixed at 1m forward")
+            return
+        }
+        
         // ARKit session is already running in AppModel, just start monitoring
         print("[Renderer] Using shared ARKit session from AppModel")
         
@@ -153,6 +168,11 @@ actor Renderer {
         Task {
             await monitorWorldAnchors()
         }
+    }
+    
+    // Helper to set simulator flag from async context
+    private func setSimulatorFlag(_ flag: Bool) {
+        self.isRunningOnSimulator = flag
     }
     
     private func monitorWorldAnchors() async {
@@ -311,6 +331,10 @@ actor Renderer {
             print("[Renderer] Creating renderer...")
             let renderer = Renderer(layerRenderer, appModel: appModel)
             
+            // Cache simulator flag
+            let simulatorFlag = await appModel.isRunningOnSimulator
+            await renderer.setSimulatorFlag(simulatorFlag)
+            
             // Set initial display mode
             let initialMode = await appModel.displayMode
             await renderer.updateDisplayMode(initialMode)
@@ -327,14 +351,11 @@ actor Renderer {
             print("[Renderer] Starting AR session...")
             await renderer.startARSession(arSession)
             
-            // Load PLY asynchronously only if we're in point cloud mode
-            // (will be loaded later if user switches to point cloud mode)
+            // Start animation or load single frame depending on available files
             if await appModel.displayMode == .pointCloud {
-                print("[Renderer] Loading PLY file...")
-                await renderer.pointCloudRenderer.loadPLY(named: "shimonju_sf_000001")
-                print("[Renderer] PLY file loaded")
+                await renderer.scanAndStartAnimation()
             } else {
-                print("[Renderer] Axes placement mode, skipping PLY load for now")
+                print("[Renderer] Axes placement mode, skipping PLY load")
             }
             
             print("[Renderer] Starting render loop")
@@ -364,28 +385,67 @@ actor Renderer {
         // The actual matrix updates happen in render() based on current mode
     }
     
+    /// iCloud Drive の ShiibaAVP/Shimonju/ から PLY ファイルURLを昇順で返す。
+    /// iCloudが使えない場合は Bundle.main にフォールバック。
+    private nonisolated func scanICloudPLYFiles() -> [URL] {
+        // iCloud.jp.p4n.ShiibaVisionOsVisualizer コンテナの Documents/Shimonju/ を参照
+        // Mac パス: ~/Library/Mobile Documents/iCloud~jp~p4n~ShiibaVisionOsVisualizer/Documents/Shimonju/
+        let containerID = "iCloud.jp.p4n.ShiibaVisionOsVisualizer"
+        if let base = FileManager.default.url(
+            forUbiquityContainerIdentifier: containerID
+        )?.appendingPathComponent("Documents/Shimonju") {
+            let urls = (try? FileManager.default.contentsOfDirectory(
+                at: base,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
+            ))?.filter { $0.pathExtension.lowercased() == "ply" }
+              .sorted { $0.lastPathComponent < $1.lastPathComponent } ?? []
+            if !urls.isEmpty {
+                print("[Renderer] iCloud PLY: \(urls.count) files in Documents/Shimonju")
+                return urls
+            }
+            print("[Renderer] iCloud directory empty or not found: Documents/Shimonju")
+        } else {
+            print("[Renderer] iCloud container not available (entitlement missing?)")
+        }
+        // Bundle fallback
+        if let url = Bundle.main.url(forResource: "shimonju_sf_000001", withExtension: "ply") {
+            print("[Renderer] Fallback: Bundle.main")
+            return [url]
+        }
+        print("[Renderer] No PLY files found anywhere")
+        return []
+    }
+
+    /// スキャン → アニメーション or 静的ロードを実行
+    private func scanAndStartAnimation() async {
+        let urls = scanICloudPLYFiles()
+        if urls.count > 1 {
+            pointCloudRenderer.startAnimation(frameURLs: urls)
+        } else if let url = urls.first {
+            // シングルフレーム（シミュレーター等）: 従来方式
+            await pointCloudRenderer.loadSingleFrame(url: url)
+        }
+    }
+
     private func updateDisplayMode(_ mode: AppModel.DisplayMode) {
         if currentDisplayMode != mode {
             print("[Renderer] 🔄 Display mode changed: \(currentDisplayMode) -> \(mode)")
             
-            // If switching to point cloud mode, ensure PLY is loaded and cache anchor
+            // If switching to point cloud mode, start animation
             if mode == .pointCloud && currentDisplayMode == .axesPlacement {
                 Task {
-                    let isLoaded = await pointCloudRenderer.isDataLoaded
-                    if !isLoaded {
-                        print("[Renderer] Loading PLY for point cloud mode...")
-                        await pointCloudRenderer.loadPLY(named: "shimonju_sf_000001")
-                        print("[Renderer] ✅ PLY loaded")
-                    }
-                    
+                    await scanAndStartAnimation()
+
                     // Cache the world anchor from AppModel
                     let worldAnchor = await appModel.worldAnchor
                     if let worldAnchor = worldAnchor {
-                        // Update cache on actor context
                         await self.setCachedWorldAnchor(worldAnchor)
                         print("[Renderer] ✅ Cached world anchor for rendering")
                     }
                 }
+            } else if mode == .axesPlacement {
+                pointCloudRenderer.stopAnimation()
             }
         }
         currentDisplayMode = mode
@@ -407,6 +467,13 @@ actor Renderer {
     private func updateRenderState(deviceAnchor: DeviceAnchor?) -> (Bool, matrix_float4x4) {
         // This runs on the render thread, so we need to be careful with MainActor access
         // We'll use cached values and update them asynchronously
+        
+        // Simulator mode: always return fixed transform
+        if isRunningOnSimulator {
+            // Fixed position: 1m forward (0, 0, -1)
+            let matrix = matrix4x4_translation(0, 0, -1.0)
+            return (true, matrix)
+        }
         
         if currentDisplayMode == .axesPlacement {
             // Axes placement mode
@@ -529,9 +596,18 @@ actor Renderer {
 
     func render(drawable: LayerRenderer.Drawable, commandBuffer: MTLCommandBuffer, frameIndex: UInt64) {
         let time = drawable.frameTiming.presentationTime.timeInterval
-        let deviceAnchor = worldTracking.queryDeviceAnchor(atTimestamp: time)
-
+        
+        // Query device anchor (on real device) or use nil (on simulator)
+        let deviceAnchor: DeviceAnchor?
+        #if targetEnvironment(simulator)
+        // On simulator, WorldTrackingProvider doesn't work, so we can't get a device anchor
+        // This will cause a warning from encodePresent, but it's unavoidable on simulator
+        deviceAnchor = nil
+        #else
+        // On real device, query and set device anchor normally
+        deviceAnchor = worldTracking.queryDeviceAnchor(atTimestamp: time)
         drawable.deviceAnchor = deviceAnchor
+        #endif
         
         // Update display mode asynchronously
         Task { @MainActor in
@@ -631,6 +707,10 @@ actor Renderer {
             )
         }
 
+        #if targetEnvironment(simulator)
+        // On simulator, encodePresent will produce a warning because we don't have deviceAnchor
+        // This is expected and can be safely ignored - the rendering still works
+        #endif
         drawable.encodePresent(commandBuffer: commandBuffer)
     }
 
@@ -639,6 +719,7 @@ actor Renderer {
         while true {
             if layerRenderer.state == .invalidated {
                 print("Layer is invalidated")
+                pointCloudRenderer.stopAnimation()
                 Task { @MainActor in
                     appModel.immersiveSpaceState = .closed
                 }
