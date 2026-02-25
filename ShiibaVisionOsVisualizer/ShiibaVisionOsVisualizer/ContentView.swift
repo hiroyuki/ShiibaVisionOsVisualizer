@@ -38,7 +38,7 @@ struct ContentView: View {
             } label: {
                 Label("Start", systemImage: "play.fill")
             }
-            .disabled(appModel.worldAnchorID == nil)
+            .disabled(appModel.worldAnchorID == nil && !appModel.isRunningOnSimulator)
             
             Divider()
                 .padding(.horizontal)
@@ -47,6 +47,18 @@ struct ContentView: View {
             VStack(spacing: 12) {
                 Text("World Anchor Placement")
                     .font(.headline)
+                
+                // Simulator warning
+                if appModel.isRunningOnSimulator {
+                    HStack {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                        Text("シミュレーターでは使用不可")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 4)
+                }
                 
                 if let anchorID = appModel.worldAnchorID {
                     Text("Anchor ID: \(anchorID.uuidString.prefix(8))...")
@@ -167,7 +179,7 @@ struct ContentView: View {
                     Label(appModel.worldAnchorID == nil ? "アンカー位置を設定" : "アンカー位置を更新",
                           systemImage: "location.circle")
                 }
-                .disabled(appModel.displayMode == .axesPlacement)  // Disable while in placement mode
+                .disabled(appModel.displayMode == .axesPlacement || appModel.isRunningOnSimulator)  // Disable on simulator
                 
                 if appModel.worldAnchorID != nil {
                     Button(role: .destructive) {
@@ -176,6 +188,7 @@ struct ContentView: View {
                         Label("アンカーをクリア", systemImage: "trash")
                     }
                     .buttonStyle(.borderless)
+                    .disabled(appModel.isRunningOnSimulator)  // Disable on simulator
                 }
             }
             .padding()
@@ -183,10 +196,8 @@ struct ContentView: View {
         }
         .padding()
         .onAppear {
-//            #if DEBUG
-//            checkiCloudFiles()
-//            prefetchAllFiles()
-//            #endif
+            checkiCloudFiles()
+            prefetchAllFiles()
         }
         .onChange(of: appModel.immersiveSpaceState) { _, newState in
             // Dismiss window when starting point cloud display (not in axes placement mode)

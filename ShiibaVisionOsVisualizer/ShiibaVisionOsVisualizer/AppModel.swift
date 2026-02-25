@@ -28,11 +28,25 @@ class AppModel {
     }
     var displayMode: DisplayMode = .pointCloud
     
+    // Simulator detection
+    var isRunningOnSimulator: Bool {
+        #if targetEnvironment(simulator)
+        return true
+        #else
+        return false
+        #endif
+    }
+    
     // Shared ARKit session and providers
     let arSession = ARKitSession()
     let worldTracking = WorldTrackingProvider()
     let planeDetection = PlaneDetectionProvider(alignments: [.horizontal])
     private var isARSessionRunning = false
+    
+    // Simulator mode: fake anchor at 1m forward, floor level
+    var simulatorFakeAnchorTransform: matrix_float4x4 {
+        matrix4x4_translation(0, 0, -1.0)
+    }
     
     // Point cloud placement
     var worldAnchorID: UUID?
@@ -54,14 +68,32 @@ class AppModel {
         // Load saved world anchor ID
         loadWorldAnchorID()
         
-        // Start ARKit session
-        Task {
-            await startARSession()
+        // Start ARKit session (skip on simulator)
+        if isRunningOnSimulator {
+            print("[AppModel] 🖥️ Running on simulator - ARKit disabled")
+            isARSessionRunning = true  // Fake success for simulator
+            
+            // Create a fake anchor ID for simulator if none exists
+            if worldAnchorID == nil {
+                let fakeID = UUID()
+                saveWorldAnchorID(fakeID)
+                print("[AppModel] 🖥️ Created fake anchor ID for simulator: \(fakeID)")
+            }
+        } else {
+            Task {
+                await startARSession()
+            }
         }
     }
     
     private func startARSession() async {
         guard !isARSessionRunning else { return }
+        
+        // Skip ARKit on simulator
+        if isRunningOnSimulator {
+            print("[AppModel] 🖥️ Skipping ARKit session on simulator")
+            return
+        }
         
         do {
             try await arSession.run([worldTracking, planeDetection])
@@ -102,6 +134,12 @@ class AppModel {
     }
     
     func enterAxesPlacementMode() async {
+        // Disable axes placement on simulator
+        if isRunningOnSimulator {
+            print("[AppModel] 🖥️ Axes placement mode not available on simulator")
+            return
+        }
+        
         displayMode = .axesPlacement
         devicePosition = nil
         deviceTransform = nil
@@ -153,6 +191,12 @@ class AppModel {
     }
     
     func removeAllWorldAnchors() async {
+        // Skip on simulator
+        if isRunningOnSimulator {
+            print("[AppModel] 🖥️ Skipping anchor removal on simulator")
+            return
+        }
+        
         print("[AppModel] 🗑️ Removing all existing WorldAnchors...")
         
         // Wait for ARKit session to be fully running
@@ -221,6 +265,12 @@ class AppModel {
     }
     
     func confirmPlacementAtCurrentPosition() async {
+        // Disable on simulator
+        if isRunningOnSimulator {
+            print("[AppModel] 🖥️ Anchor placement not available on simulator")
+            return
+        }
+        
         guard let finalPosition = previewPosition else {
             print("[AppModel] ❌ Preview position not available")
             return
