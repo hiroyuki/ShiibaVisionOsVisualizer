@@ -5,6 +5,7 @@
 //  Created by 堀宏行 on 2026/02/17.
 //
 
+import AVFoundation
 import CompositorServices
 import Metal
 import simd
@@ -87,9 +88,12 @@ actor Renderer {
 
     // Point cloud renderer
     let pointCloudRenderer: PointCloudRenderer
-    
+
     // Axes renderer for placement mode
     let axesRenderer: AxesRenderer
+
+    // Audio player for synchronized playback
+    var audioPlayer: AVPlayer?
 
     init(_ layerRenderer: LayerRenderer, appModel: AppModel) {
         self.layerRenderer = layerRenderer
@@ -187,13 +191,15 @@ actor Renderer {
         // Track if we've found the preferred anchor
         var foundPreferredAnchor = false
         var anchorSearchTimeout: Task<Void, Never>? = nil
-        
+        var isAnchorSearchTimedOut = false
+
         // If we have a preferred anchor, start a timeout to use fallback if not found
         if savedAnchorID != nil {
             anchorSearchTimeout = Task {
                 try? await Task.sleep(for: .seconds(5))
                 if !foundPreferredAnchor && cachedWorldAnchor == nil {
-                    print("[Renderer] ⏰ Timeout waiting for preferred anchor, will use any available anchor as fallback")
+                    print("[Renderer] ⏰ Timeout: accepting any available anchor as fallback")
+                    isAnchorSearchTimedOut = true
                 }
             }
         }
@@ -219,8 +225,10 @@ actor Renderer {
             // Accept anchor if:
             // 1. It's the preferred anchor (ALWAYS accept - will replace cache)
             // 2. No cache yet and no saved ID (use first available)
-            let shouldAccept = isPreferredAnchor || 
-                              (cachedWorldAnchor == nil && savedAnchorID == nil)
+            // 3. No cache yet and search timed out (fallback to any anchor)
+            let shouldAccept = isPreferredAnchor ||
+                              (cachedWorldAnchor == nil && savedAnchorID == nil) ||
+                              (cachedWorldAnchor == nil && isAnchorSearchTimedOut)
             
             // Preferred anchor ALWAYS replaces cache
             let shouldReplaceCache = isPreferredAnchor || cachedWorldAnchor == nil
@@ -426,6 +434,35 @@ actor Renderer {
             // シングルフレーム（シミュレーター等）: 従来方式
             await pointCloudRenderer.loadSingleFrame(url: url)
         }
+        // 音声ファイルを検索して再生
+        if let audioURL = scanAudioFile() {
+            startAudio(url: audioURL)
+        }
+    }
+
+    /// iCloud フォルダから音声ファイルを1つ取得
+    private nonisolated func scanAudioFile() -> URL? {
+        guard let containerURL = FileManager.default
+            .url(forUbiquityContainerIdentifier: "iCloud.jp.p4n.ShiibaVisionOsVisualizer")?
+            .appendingPathComponent("Documents/Shimonju") else { return nil }
+        let extensions = ["mp3", "wav", "m4a", "aac"]
+        let files = (try? FileManager.default.contentsOfDirectory(
+            at: containerURL,
+            includingPropertiesForKeys: nil
+        )) ?? []
+        return files.first { extensions.contains($0.pathExtension.lowercased()) }
+    }
+
+    private func startAudio(url: URL) {
+        audioPlayer = AVPlayer(url: url)
+        audioPlayer?.play()
+        print("[Renderer] 🎵 Audio started: \(url.lastPathComponent)")
+    }
+
+    private func stopAudio() {
+        audioPlayer?.pause()
+        audioPlayer = nil
+        print("[Renderer] 🔇 Audio stopped")
     }
 
     private func updateDisplayMode(_ mode: AppModel.DisplayMode) {
@@ -446,6 +483,7 @@ actor Renderer {
                 }
             } else if mode == .axesPlacement {
                 pointCloudRenderer.stopAnimation()
+                stopAudio()
             }
         }
         currentDisplayMode = mode
@@ -720,6 +758,7 @@ actor Renderer {
             if layerRenderer.state == .invalidated {
                 print("Layer is invalidated")
                 pointCloudRenderer.stopAnimation()
+                stopAudio()
                 Task { @MainActor in
                     appModel.immersiveSpaceState = .closed
                 }
