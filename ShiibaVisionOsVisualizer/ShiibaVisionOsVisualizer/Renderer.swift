@@ -5,6 +5,7 @@
 //  Created by 堀宏行 on 2026/02/17.
 //
 
+import AVFoundation
 import CompositorServices
 import Metal
 import simd
@@ -75,14 +76,32 @@ actor Renderer {
     let worldTracking: WorldTrackingProvider
     let layerRenderer: LayerRenderer
     let appModel: AppModel
+    
+    // Cached display mode (updated from main actor)
+    var currentDisplayMode: AppModel.DisplayMode = .pointCloud
+    
+    // Cached world anchor for rendering (updated when anchor changes)
+    var cachedWorldAnchor: WorldAnchor?
+    
+    // Cached simulator flag
+    var isRunningOnSimulator: Bool = false
 
     // Point cloud renderer
     let pointCloudRenderer: PointCloudRenderer
+
+    // Axes renderer for placement mode
+    let axesRenderer: AxesRenderer
+
+    // Audio player for synchronized playback
+    var audioPlayer: AVPlayer?
 
     init(_ layerRenderer: LayerRenderer, appModel: AppModel) {
         self.layerRenderer = layerRenderer
         self.device = layerRenderer.device
         self.appModel = appModel
+        
+        // Use shared world tracking from appModel
+        self.worldTracking = appModel.worldTracking
 
         let device = self.device
         self.commandQueue = self.device.makeCommandQueue()!
@@ -107,8 +126,15 @@ actor Renderer {
 
         do {
             pointCloudRenderer = try PointCloudRenderer(device: device, layerRenderer: layerRenderer)
+            // Initialize at origin - will be updated by world anchor
+            pointCloudRenderer.modelMatrix = matrix_identity_float4x4
+            print("[Renderer] ✅ PointCloudRenderer initialized with identity matrix")
+            
+            axesRenderer = try AxesRenderer(device: device, layerRenderer: layerRenderer)
+            // Initialize axes at eye level, 1m in front (visible immediately)
+            axesRenderer.modelMatrix = matrix4x4_translation(0, 0, -1.0)
         } catch {
-            fatalError("Unable to create PointCloudRenderer: \(error)")
+            fatalError("Unable to create renderers: \(error)")
         }
 
         #if !targetEnvironment(simulator)
@@ -119,25 +145,228 @@ actor Renderer {
         commandQueueResidencySet = residencySet
         commandQueue.addResidencySet(residencySet)
         #endif
-
-        worldTracking = WorldTrackingProvider()
     }
 
     private func startARSession(_ arSession: ARKitSession) async {
-        do {
-            try await arSession.run([worldTracking])
-        } catch {
-            fatalError("Failed to initialize ARSession")
+        // Check if running on simulator
+        if isRunningOnSimulator {
+            print("[Renderer] 🖥️ Running on simulator - skipping ARKit monitoring")
+            
+            // Set up fake anchor for simulator
+            let fakeTransform = await appModel.simulatorFakeAnchorTransform
+            pointCloudRenderer.modelMatrix = fakeTransform
+            
+            print("[Renderer] 🖥️ Simulator mode: Point cloud fixed at 1m forward")
+            return
+        }
+        
+        // ARKit session is already running in AppModel, just start monitoring
+        print("[Renderer] Using shared ARKit session from AppModel")
+        
+        // Start floor detection monitoring
+        Task {
+            await startFloorDetection()
+        }
+        
+        // Monitor world anchor updates to restore saved anchor (in background)
+        Task {
+            await monitorWorldAnchors()
+        }
+    }
+    
+    // Helper to set simulator flag from async context
+    private func setSimulatorFlag(_ flag: Bool) {
+        self.isRunningOnSimulator = flag
+    }
+    
+    private func monitorWorldAnchors() async {
+        let savedAnchorID = await appModel.worldAnchorID
+        
+        if let savedAnchorID = savedAnchorID {
+            print("[Renderer] Monitoring for world anchor (preferred ID: \(savedAnchorID))")
+        } else {
+            print("[Renderer] No saved anchor ID, will use first available world anchor")
+        }
+        
+        // Track if we've found the preferred anchor
+        var foundPreferredAnchor = false
+        var anchorSearchTimeout: Task<Void, Never>? = nil
+        var isAnchorSearchTimedOut = false
+
+        // If we have a preferred anchor, start a timeout to use fallback if not found
+        if savedAnchorID != nil {
+            anchorSearchTimeout = Task {
+                try? await Task.sleep(for: .seconds(5))
+                if !foundPreferredAnchor && cachedWorldAnchor == nil {
+                    print("[Renderer] ⏰ Timeout: accepting any available anchor as fallback")
+                    isAnchorSearchTimedOut = true
+                }
+            }
+        }
+        
+        for await update in worldTracking.anchorUpdates {
+            print("[Renderer] Received anchor update: \(update.anchor.id), event: \(update.event)")
+            
+            guard let worldAnchor = update.anchor as? WorldAnchor else {
+                print("[Renderer] Anchor is not a WorldAnchor, skipping")
+                continue
+            }
+            
+            print("[Renderer] WorldAnchor detected: \(worldAnchor.id)")
+            
+            // Determine if we should accept this anchor
+            let isPreferredAnchor = savedAnchorID != nil && worldAnchor.id == savedAnchorID
+            
+            if isPreferredAnchor {
+                foundPreferredAnchor = true
+                anchorSearchTimeout?.cancel()
+            }
+            
+            // Accept anchor if:
+            // 1. It's the preferred anchor (ALWAYS accept - will replace cache)
+            // 2. No cache yet and no saved ID (use first available)
+            // 3. No cache yet and search timed out (fallback to any anchor)
+            let shouldAccept = isPreferredAnchor ||
+                              (cachedWorldAnchor == nil && savedAnchorID == nil) ||
+                              (cachedWorldAnchor == nil && isAnchorSearchTimedOut)
+            
+            // Preferred anchor ALWAYS replaces cache
+            let shouldReplaceCache = isPreferredAnchor || cachedWorldAnchor == nil
+            
+            if shouldAccept {
+                switch update.event {
+                case .added, .updated:
+                    // Update AppModel with this anchor
+                    await appModel.updateWorldAnchor(worldAnchor)
+                    
+                    // Cache the world anchor for rendering (preferred anchor replaces cache)
+                    if shouldReplaceCache {
+                        let wasReplacing = cachedWorldAnchor != nil
+                        self.cachedWorldAnchor = worldAnchor
+                        
+                        // Extract position from anchor
+                        let anchorTransform = worldAnchor.originFromAnchorTransform
+                        let anchorPosition = SIMD3<Float>(
+                            anchorTransform.columns.3.x,
+                            anchorTransform.columns.3.y,
+                            anchorTransform.columns.3.z
+                        )
+                        
+                        print("[Renderer] 🔍 Anchor transform: \(anchorTransform)")
+                        print("[Renderer] 🔍 Extracted position: \(anchorPosition)")
+                        
+                        // Get saved yaw angle from AppModel
+                        let yaw = await appModel.worldAnchorYaw
+                        
+                        // Get floor Y coordinate from AppModel
+                        let floorY = await appModel.detectedFloorY ?? 0.0
+                        
+                        // Create transform: Translation * Rotation(Y-axis)
+                        let rotationMatrix = matrix4x4_rotation(radians: yaw, axis: SIMD3<Float>(0, 1, 0))
+                        let translationMatrix = matrix4x4_translation(anchorPosition.x, floorY, anchorPosition.z)
+                        let matrix = translationMatrix * rotationMatrix
+                        
+                        pointCloudRenderer.modelMatrix = matrix
+                        
+                        if isPreferredAnchor {
+                            if wasReplacing {
+                                print("[Renderer] ✅✅ Preferred anchor REPLACED old cache at position: (\(anchorPosition.x), \(floorY), \(anchorPosition.z)), yaw: \(yaw * 180 / .pi)°, ID: \(worldAnchor.id)")
+                            } else {
+                                print("[Renderer] ✅ Preferred world anchor restored/updated at position: (\(anchorPosition.x), \(floorY), \(anchorPosition.z)), yaw: \(yaw * 180 / .pi)°, ID: \(worldAnchor.id)")
+                            }
+                        } else {
+                            print("[Renderer] ✅ World anchor cached (fallback) at position: (\(anchorPosition.x), \(floorY), \(anchorPosition.z)), yaw: \(yaw * 180 / .pi)°, ID: \(worldAnchor.id)")
+                        }
+                    }
+                case .removed:
+                    print("[Renderer] World anchor removed: \(worldAnchor.id)")
+                    if cachedWorldAnchor?.id == worldAnchor.id {
+                        cachedWorldAnchor = nil
+                        print("[Renderer] ⚠️ Cached anchor was removed")
+                        foundPreferredAnchor = false
+                    }
+                }
+            } else {
+                if cachedWorldAnchor != nil {
+                    print("[Renderer] Ignoring anchor ID: \(worldAnchor.id) (already have cached anchor: \(cachedWorldAnchor?.id.uuidString ?? "none"))")
+                } else {
+                    print("[Renderer] Waiting for preferred anchor, ignoring: \(worldAnchor.id)")
+                }
+            }
+        }
+    }
+    
+    private var lastFloorDetectionTime: TimeInterval = 0
+    private let floorDetectionInterval: TimeInterval = 0.5  // Check every 0.5 seconds
+    
+    // Start monitoring floor planes in background
+    private func startFloorDetection() async {
+        let planeDetection = await appModel.planeDetection
+        
+        print("[Renderer] Starting floor detection monitoring...")
+        
+        Task {
+            for await update in planeDetection.anchorUpdates {
+                guard let planeAnchor = update.anchor as? PlaneAnchor else { continue }
+                
+                // Only consider horizontal planes (floor candidates)
+                if planeAnchor.alignment == .horizontal {
+                    let planeTransform = planeAnchor.originFromAnchorTransform
+                    let planeY = planeTransform.columns.3.y
+                    
+                    print("[Renderer] Horizontal plane detected at Y: \(planeY)")
+                    
+                    // Update floor Y if this is lower or first detection
+                    await MainActor.run {
+                        if appModel.detectedFloorY == nil || planeY < appModel.detectedFloorY! {
+                            appModel.updateDetectedFloor(planeY)
+                        }
+                    }
+                    
+                    // Update cached floor Y for rendering
+                    if cachedFloorY == nil || planeY < cachedFloorY! {
+                        cachedFloorY = planeY
+                    }
+                }
+            }
         }
     }
 
     @MainActor
     static func startRenderLoop(_ layerRenderer: LayerRenderer, appModel: AppModel, arSession: ARKitSession) {
+        print("[Renderer] startRenderLoop called")
         Task(executorPreference: RendererTaskExecutor.shared) {
+            print("[Renderer] Creating renderer...")
             let renderer = Renderer(layerRenderer, appModel: appModel)
+            
+            // Cache simulator flag
+            let simulatorFlag = await appModel.isRunningOnSimulator
+            await renderer.setSimulatorFlag(simulatorFlag)
+            
+            // Set initial display mode
+            let initialMode = await appModel.displayMode
+            await renderer.updateDisplayMode(initialMode)
+            print("[Renderer] Initial display mode: \(initialMode)")
+            
+            // Initialize cached world anchor from AppModel if available
+            if let existingAnchor = await appModel.worldAnchor {
+                await renderer.setCachedWorldAnchor(existingAnchor)
+                print("[Renderer] ✅ Initialized with existing world anchor: \(existingAnchor.id)")
+            } else {
+                print("[Renderer] ℹ️ No existing world anchor to cache")
+            }
+            
+            print("[Renderer] Starting AR session...")
             await renderer.startARSession(arSession)
-            // Load PLY asynchronously; rendering begins immediately (no points shown until loaded)
-            await renderer.pointCloudRenderer.loadPLY(named: "shimonju_sf_000001")
+            
+            // Start animation or load single frame depending on available files
+            if await appModel.displayMode == .pointCloud {
+                await renderer.scanAndStartAnimation()
+            } else {
+                print("[Renderer] Axes placement mode, skipping PLY load")
+            }
+            
+            print("[Renderer] Starting render loop")
             await renderer.renderLoop()
         }
     }
@@ -157,11 +386,208 @@ actor Renderer {
     }
 
     private func updateGameState() {
-        // Place the point cloud at the world origin.
-        // The model matrix is identity so the point cloud sits at (0,0,0).
-        // Floor detection will update pointCloudRenderer.modelMatrix in a future step.
-        uniforms[0].modelMatrix = pointCloudRenderer.modelMatrix
+        // This is called from renderFrame which is already in the actor context
+        // We need to synchronously access appModel data
+        
+        // For now, just use cached values that are updated elsewhere
+        // The actual matrix updates happen in render() based on current mode
     }
+    
+    /// iCloud Drive の ShiibaAVP/Shimonju/ から PLY ファイルURLを昇順で返す。
+    /// iCloudが使えない場合は Bundle.main にフォールバック。
+    private nonisolated func scanICloudPLYFiles() -> [URL] {
+        // iCloud.jp.p4n.ShiibaVisionOsVisualizer コンテナの Documents/Shimonju/ を参照
+        // Mac パス: ~/Library/Mobile Documents/iCloud~jp~p4n~ShiibaVisionOsVisualizer/Documents/Shimonju/
+        let containerID = "iCloud.jp.p4n.ShiibaVisionOsVisualizer"
+        if let base = FileManager.default.url(
+            forUbiquityContainerIdentifier: containerID
+        )?.appendingPathComponent("Documents/Shimonju") {
+            let urls = (try? FileManager.default.contentsOfDirectory(
+                at: base,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
+            ))?.filter { $0.pathExtension.lowercased() == "ply" }
+              .sorted { $0.lastPathComponent < $1.lastPathComponent } ?? []
+            if !urls.isEmpty {
+                print("[Renderer] iCloud PLY: \(urls.count) files in Documents/Shimonju")
+                return urls
+            }
+            print("[Renderer] iCloud directory empty or not found: Documents/Shimonju")
+        } else {
+            print("[Renderer] iCloud container not available (entitlement missing?)")
+        }
+        // Bundle fallback
+        if let url = Bundle.main.url(forResource: "shimonju_sf_000001", withExtension: "ply") {
+            print("[Renderer] Fallback: Bundle.main")
+            return [url]
+        }
+        print("[Renderer] No PLY files found anywhere")
+        return []
+    }
+
+    /// スキャン → アニメーション or 静的ロードを実行
+    private func scanAndStartAnimation() async {
+        let urls = scanICloudPLYFiles()
+        if urls.count > 1 {
+            pointCloudRenderer.startAnimation(frameURLs: urls)
+        } else if let url = urls.first {
+            // シングルフレーム（シミュレーター等）: 従来方式
+            await pointCloudRenderer.loadSingleFrame(url: url)
+        }
+        // 音声ファイルを検索して再生
+        if let audioURL = scanAudioFile() {
+            startAudio(url: audioURL)
+        }
+    }
+
+    /// iCloud フォルダから音声ファイルを1つ取得
+    private nonisolated func scanAudioFile() -> URL? {
+        guard let containerURL = FileManager.default
+            .url(forUbiquityContainerIdentifier: "iCloud.jp.p4n.ShiibaVisionOsVisualizer")?
+            .appendingPathComponent("Documents/Shimonju") else { return nil }
+        let extensions = ["mp3", "wav", "m4a", "aac"]
+        let files = (try? FileManager.default.contentsOfDirectory(
+            at: containerURL,
+            includingPropertiesForKeys: nil
+        )) ?? []
+        return files.first { extensions.contains($0.pathExtension.lowercased()) }
+    }
+
+    private func startAudio(url: URL) {
+        audioPlayer = AVPlayer(url: url)
+        audioPlayer?.play()
+        print("[Renderer] 🎵 Audio started: \(url.lastPathComponent)")
+    }
+
+    private func stopAudio() {
+        audioPlayer?.pause()
+        audioPlayer = nil
+        print("[Renderer] 🔇 Audio stopped")
+    }
+
+    private func updateDisplayMode(_ mode: AppModel.DisplayMode) {
+        if currentDisplayMode != mode {
+            print("[Renderer] 🔄 Display mode changed: \(currentDisplayMode) -> \(mode)")
+            
+            // If switching to point cloud mode, start animation
+            if mode == .pointCloud && currentDisplayMode == .axesPlacement {
+                Task {
+                    await scanAndStartAnimation()
+
+                    // Cache the world anchor from AppModel
+                    let worldAnchor = await appModel.worldAnchor
+                    if let worldAnchor = worldAnchor {
+                        await self.setCachedWorldAnchor(worldAnchor)
+                        print("[Renderer] ✅ Cached world anchor for rendering")
+                    }
+                }
+            } else if mode == .axesPlacement {
+                pointCloudRenderer.stopAnimation()
+                stopAudio()
+            }
+        }
+        currentDisplayMode = mode
+    }
+    
+    // Helper to set cached anchor from async context
+    private func setCachedWorldAnchor(_ anchor: WorldAnchor) {
+        self.cachedWorldAnchor = anchor
+    }
+    
+    private func updateModelMatrices(_ matrix: matrix_float4x4) {
+        pointCloudRenderer.modelMatrix = matrix
+        axesRenderer.modelMatrix = matrix
+        // Also update uniforms for current frame
+        uniforms[0].modelMatrix = matrix
+    }
+    
+    // Synchronous state update - returns (shouldRender, matrix)
+    private func updateRenderState(deviceAnchor: DeviceAnchor?) -> (Bool, matrix_float4x4) {
+        // This runs on the render thread, so we need to be careful with MainActor access
+        // We'll use cached values and update them asynchronously
+        
+        // Simulator mode: always return fixed transform
+        if isRunningOnSimulator {
+            // Fixed position: 1m forward (0, 0, -1)
+            let matrix = matrix4x4_translation(0, 0, -1.0)
+            return (true, matrix)
+        }
+        
+        if currentDisplayMode == .axesPlacement {
+            // Axes placement mode
+            if let deviceAnchor = deviceAnchor {
+                let deviceTransform = deviceAnchor.originFromAnchorTransform
+                
+                // Extract device position
+                let devicePosition = SIMD3<Float>(
+                    deviceTransform.columns.3.x,
+                    deviceTransform.columns.3.y,
+                    deviceTransform.columns.3.z
+                )
+                
+                // Extract Y-axis rotation from device transform
+                let forward = SIMD3<Float>(
+                    -deviceTransform.columns.2.x,
+                    -deviceTransform.columns.2.y,
+                    -deviceTransform.columns.2.z
+                )
+                
+                // Project forward vector onto XZ plane for yaw calculation
+                let forwardXZ = SIMD3<Float>(forward.x, 0, forward.z)
+                let normalizedForwardXZ = normalize(forwardXZ)
+                
+                // Calculate yaw angle (rotation around Y axis) - negated to match device orientation
+                let yaw = -atan2(normalizedForwardXZ.x, -normalizedForwardXZ.z)
+                
+                // Position: directly below device (same X, Z, but on floor)
+                let previewPos = SIMD3<Float>(
+                    devicePosition.x,
+                    cachedFloorY ?? (devicePosition.y - 1.5),  // Floor or 1.5m below device
+                    devicePosition.z
+                )
+                
+                // Create transform matrix with Y-axis rotation only
+                // Translation * Rotation(Y-axis)
+                let rotationMatrix = matrix4x4_rotation(radians: yaw, axis: SIMD3<Float>(0, 1, 0))
+                let translationMatrix = matrix4x4_translation(previewPos.x, previewPos.y, previewPos.z)
+                let matrix = translationMatrix * rotationMatrix
+                
+                // Update AppModel asynchronously (for UI)
+                Task { @MainActor in
+                    appModel.updateDeviceTransform(deviceTransform)
+                }
+                
+                if Int.random(in: 0..<240) == 0 {
+                    print("[Renderer] 🎯 Axes directly below device at: \(previewPos), yaw: \(yaw * 180 / .pi)°")
+                }
+                
+                return (true, matrix)
+            }
+        } else {
+            // Point cloud mode - use cached world anchor with Y=0 and saved rotation
+            if let worldAnchor = cachedWorldAnchor {
+                // Matrix is already set in monitorWorldAnchors() with correct rotation
+                // Just return it from pointCloudRenderer
+                let matrix = pointCloudRenderer.modelMatrix
+                
+                if Int.random(in: 0..<240) == 0 {
+                    let pos = SIMD3<Float>(matrix.columns.3.x, matrix.columns.3.y, matrix.columns.3.z)
+                    print("[Renderer] ☁️ PointCloud at: \(pos)")
+                }
+                
+                return (true, matrix)
+            } else {
+                print("[Renderer] ⚠️ No world anchor available for point cloud")
+                return (false, matrix_identity_float4x4)
+            }
+        }
+        
+        // Fallback
+        return (true, matrix4x4_translation(0, 0, -1.0))
+    }
+    
+    // Cache for floor Y coordinate (updated from floor detection)
+    private var cachedFloorY: Float?
 
     func renderFrame() {
         guard let frame = layerRenderer.queryNextFrame() else { return }
@@ -208,9 +634,34 @@ actor Renderer {
 
     func render(drawable: LayerRenderer.Drawable, commandBuffer: MTLCommandBuffer, frameIndex: UInt64) {
         let time = drawable.frameTiming.presentationTime.timeInterval
-        let deviceAnchor = worldTracking.queryDeviceAnchor(atTimestamp: time)
-
+        
+        // Query device anchor (on real device) or use nil (on simulator)
+        let deviceAnchor: DeviceAnchor?
+        #if targetEnvironment(simulator)
+        // On simulator, WorldTrackingProvider doesn't work, so we can't get a device anchor
+        // This will cause a warning from encodePresent, but it's unavoidable on simulator
+        deviceAnchor = nil
+        #else
+        // On real device, query and set device anchor normally
+        deviceAnchor = worldTracking.queryDeviceAnchor(atTimestamp: time)
         drawable.deviceAnchor = deviceAnchor
+        #endif
+        
+        // Update display mode asynchronously
+        Task { @MainActor in
+            let newMode = appModel.displayMode
+            await self.updateDisplayMode(newMode)
+        }
+        
+        // Synchronously update matrices before rendering
+        let (shouldRender, matrixToUse) = self.updateRenderState(deviceAnchor: deviceAnchor)
+        
+        if shouldRender {
+            // Update matrices immediately
+            self.pointCloudRenderer.modelMatrix = matrixToUse
+            self.axesRenderer.modelMatrix = matrixToUse
+            self.uniforms[0].modelMatrix = matrixToUse
+        }
 
         if perDrawableTarget[drawable.target] == nil {
             perDrawableTarget[drawable.target] = .init(drawable: drawable)
@@ -260,26 +711,54 @@ actor Renderer {
 
         let viewports = drawable.views.map { $0.textureMap.viewport }
 
-        // Encode point cloud compute + render
-        pointCloudRenderer.encode(
-            commandBuffer:        commandBuffer,
-            renderPassDescriptor: renderPassDescriptor,
-            uniforms:             uniforms[0],
-            uniformsBuffer:       dynamicUniformBuffer,
-            uniformsOffset:       uniformBufferOffset,
-            viewProjectionBuffer: drawableTarget.viewProjectionBuffer,
-            viewProjectionOffset: drawableTarget.viewProjectionBufferOffset,
-            viewports:            viewports,
-            viewCount:            drawable.views.count
-        )
+        // Encode appropriate renderer based on cached display mode
+        if currentDisplayMode == .axesPlacement {
+            // Render axes for placement
+            if Int.random(in: 0..<240) == 0 {
+                print("[Renderer] 🎯 Rendering Axes (model matrix: \(axesRenderer.modelMatrix))")
+            }
+            axesRenderer.encode(
+                commandBuffer: commandBuffer,
+                renderPassDescriptor: renderPassDescriptor,
+                uniformsBuffer: dynamicUniformBuffer,
+                uniformsOffset: uniformBufferOffset,
+                viewProjectionBuffer: drawableTarget.viewProjectionBuffer,
+                viewProjectionOffset: drawableTarget.viewProjectionBufferOffset,
+                viewports: viewports,
+                viewCount: drawable.views.count
+            )
+        } else {
+            // Render point cloud
+            if Int.random(in: 0..<240) == 0 {
+                print("[Renderer] ☁️ Rendering PointCloud (model matrix: \(pointCloudRenderer.modelMatrix))")
+            }
+            pointCloudRenderer.encode(
+                commandBuffer: commandBuffer,
+                renderPassDescriptor: renderPassDescriptor,
+                uniforms: uniforms[0],
+                uniformsBuffer: dynamicUniformBuffer,
+                uniformsOffset: uniformBufferOffset,
+                viewProjectionBuffer: drawableTarget.viewProjectionBuffer,
+                viewProjectionOffset: drawableTarget.viewProjectionBufferOffset,
+                viewports: viewports,
+                viewCount: drawable.views.count
+            )
+        }
 
+        #if targetEnvironment(simulator)
+        // On simulator, encodePresent will produce a warning because we don't have deviceAnchor
+        // This is expected and can be safely ignored - the rendering still works
+        #endif
         drawable.encodePresent(commandBuffer: commandBuffer)
     }
 
     func renderLoop() {
+        print("render loop started")
         while true {
             if layerRenderer.state == .invalidated {
                 print("Layer is invalidated")
+                pointCloudRenderer.stopAnimation()
+                stopAudio()
                 Task { @MainActor in
                     appModel.immersiveSpaceState = .closed
                 }
@@ -398,3 +877,11 @@ nonisolated func matrix4x4_translation(_ translationX: Float, _ translationY: Fl
                            vector_float4(0, 0, 1, 0),
                            vector_float4(translationX, translationY, translationZ, 1)))
 }
+
+nonisolated func matrix4x4_scale(_ x: Float, _ y: Float, _ z: Float) -> matrix_float4x4 {
+    return .init(columns: (vector_float4(x, 0, 0, 0),
+                           vector_float4(0, y, 0, 0),
+                           vector_float4(0, 0, z, 0),
+                           vector_float4(0, 0, 0, 1)))
+}
+
