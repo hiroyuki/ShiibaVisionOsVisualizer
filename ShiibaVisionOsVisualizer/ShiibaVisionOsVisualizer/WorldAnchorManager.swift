@@ -60,6 +60,7 @@ class WorldAnchorManager {
             print("[ANCHOR-TRACE] 1️⃣ WorldAnchor PERSISTED via addAnchor. UUID: \(worldAnchor.id)")
             saveAnchorID(worldAnchor.id)
             self.anchor = worldAnchor
+            setAnchorTransform(transform)
             print("[WorldAnchorManager] ✅ WorldAnchor created and saved: \(worldAnchor.id)")
         } catch {
             print("[WorldAnchorManager] ❌ Failed to save WorldAnchor: \(error)")

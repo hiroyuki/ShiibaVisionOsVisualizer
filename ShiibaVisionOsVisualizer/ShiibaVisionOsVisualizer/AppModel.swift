@@ -7,6 +7,7 @@
 
 import SwiftUI
 import ARKit
+import os
 
 /// Maintains app-wide state
 @MainActor
@@ -48,10 +49,12 @@ class AppModel {
         matrix4x4_translation(0, 0, -1.0)
     }
     
-    // Point cloud placement
-    var worldAnchorID: UUID?
-    var worldAnchor: WorldAnchor?
-    var worldAnchorYaw: Float = 0.0  // Y軸回転角度（ラジアン）
+    // WorldAnchor management
+    let worldAnchorManager: WorldAnchorManager
+    
+    // Computed properties for backward compatibility (ContentView等)
+    var worldAnchorID: UUID? { worldAnchorManager.anchorID }
+    var worldAnchor: WorldAnchor? { worldAnchorManager.anchor }
     
     // Device position tracking (updated every frame from Renderer)
     var devicePosition: SIMD3<Float>?
@@ -65,21 +68,21 @@ class AppModel {
     var previewOffsetFromDevice: SIMD3<Float> = SIMD3<Float>(0, 0, -1.0)
     
     init() {
-        // Load saved world anchor ID
-        loadWorldAnchorID()
+        worldAnchorManager = WorldAnchorManager(worldTracking: worldTracking)
+        worldAnchorManager.loadSavedAnchorID()
         
-        // Start ARKit session (skip on simulator)
         if isRunningOnSimulator {
             print("[AppModel] 🖥️ Running on simulator - ARKit disabled")
-            isARSessionRunning = true  // Fake success for simulator
+            isARSessionRunning = true
             
-            // Create a fake anchor ID for simulator if none exists
-            if worldAnchorID == nil {
+            if worldAnchorManager.anchorID == nil {
                 let fakeID = UUID()
-                saveWorldAnchorID(fakeID)
+                worldAnchorManager.anchorID = fakeID
+                UserDefaults.standard.set(fakeID.uuidString, forKey: "pointCloudWorldAnchorID")
                 print("[AppModel] 🖥️ Created fake anchor ID for simulator: \(fakeID)")
             }
         } else {
+            worldAnchorManager.startMonitoring()
             Task {
                 await startARSession()
             }
@@ -104,35 +107,6 @@ class AppModel {
         }
     }
     
-    func saveWorldAnchorID(_ id: UUID) {
-        worldAnchorID = id
-        UserDefaults.standard.set(id.uuidString, forKey: "pointCloudWorldAnchorID")
-        UserDefaults.standard.synchronize()  // Force immediate save
-        print("[AppModel] Saved world anchor ID: \(id)")
-    }
-    
-    func loadWorldAnchorID() {
-        if let uuidString = UserDefaults.standard.string(forKey: "pointCloudWorldAnchorID"),
-           let uuid = UUID(uuidString: uuidString) {
-            worldAnchorID = uuid
-            print("[AppModel] Loaded world anchor ID: \(uuid)")
-        } else {
-            print("[AppModel] No saved world anchor ID found in UserDefaults")
-        }
-    }
-    
-    func updateWorldAnchor(_ anchor: WorldAnchor) {
-        worldAnchor = anchor
-        print("[AppModel] Updated world anchor: \(anchor.id)")
-    }
-    
-    func clearAnchor() {
-        worldAnchorID = nil
-        worldAnchor = nil
-        UserDefaults.standard.removeObject(forKey: "pointCloudWorldAnchorID")
-        print("[AppModel] Cleared anchor")
-    }
-    
     func enterAxesPlacementMode() async {
         // Disable axes placement on simulator
         if isRunningOnSimulator {
@@ -141,18 +115,21 @@ class AppModel {
         }
         
         displayMode = .axesPlacement
+        sharedRenderState.withLock { $0.displayMode = .axesPlacement }
         devicePosition = nil
         deviceTransform = nil
         previewPosition = nil
         
         // Remove all existing world anchors before starting placement mode
-        await removeAllWorldAnchors()
+        await worldAnchorManager.removeAllAnchors()
+        worldAnchorManager.clearAnchor()
         
         print("[AppModel] Entered axes placement mode - waiting for user to move to desired position")
     }
     
     func enterPointCloudMode() {
         displayMode = .pointCloud
+        sharedRenderState.withLock { $0.displayMode = .pointCloud }
         print("[AppModel] Entered point cloud mode")
     }
     
@@ -190,79 +167,6 @@ class AppModel {
         print("[AppModel] Floor detected at Y: \(floorY)")
     }
     
-    func removeAllWorldAnchors() async {
-        // Skip on simulator
-        if isRunningOnSimulator {
-            print("[AppModel] 🖥️ Skipping anchor removal on simulator")
-            return
-        }
-        
-        print("[AppModel] 🗑️ Removing all existing WorldAnchors...")
-        
-        // Wait for ARKit session to be fully running
-        if !isARSessionRunning {
-            print("[AppModel] ⚠️ ARKit session not running yet, waiting...")
-            // Wait a bit for session to start
-            try? await Task.sleep(for: .milliseconds(500))
-            
-            // Check again
-            if !isARSessionRunning {
-                print("[AppModel] ⚠️ ARKit session still not running, skipping anchor removal")
-                return
-            }
-        }
-        
-        // Wait for world tracking provider to be ready
-        // Query device anchor to ensure provider is running
-        var retryCount = 0
-        let maxRetries = 10
-        
-        while retryCount < maxRetries {
-            if worldTracking.queryDeviceAnchor(atTimestamp: CACurrentMediaTime()) != nil {
-                // Provider is ready
-                print("[AppModel] ✅ World tracking provider is ready")
-                break
-            }
-            
-            print("[AppModel] ⏳ Waiting for world tracking provider... (\(retryCount + 1)/\(maxRetries))")
-            try? await Task.sleep(for: .milliseconds(200))
-            retryCount += 1
-        }
-        
-        if retryCount >= maxRetries {
-            print("[AppModel] ⚠️ World tracking provider not ready after \(maxRetries) retries, skipping anchor removal")
-            return
-        }
-        
-        // Get all anchors from worldTracking
-        guard let allAnchors = await worldTracking.allAnchors else {
-            print("[AppModel] ℹ️ No anchors to remove")
-            return
-        }
-        
-        print("[AppModel] 📋 Found \(allAnchors.count) total anchor(s)")
-        
-        var removedCount = 0
-        for anchor in allAnchors {
-            if let worldAnchor = anchor as? WorldAnchor {
-                do {
-                    try await worldTracking.removeAnchor(worldAnchor)
-                    removedCount += 1
-                    print("[AppModel] 🗑️ Removed WorldAnchor: \(worldAnchor.id)")
-                } catch {
-                    print("[AppModel] ⚠️ Failed to remove WorldAnchor \(worldAnchor.id): \(error)")
-                }
-            }
-        }
-        
-        // Clear cached state
-        worldAnchorID = nil
-        worldAnchor = nil
-        UserDefaults.standard.removeObject(forKey: "pointCloudWorldAnchorID")
-        UserDefaults.standard.synchronize()
-        
-        print("[AppModel] ✅ Removed \(removedCount) WorldAnchor(s)")
-    }
     
     func confirmPlacementAtCurrentPosition() async {
         // Disable on simulator
@@ -291,49 +195,19 @@ class AppModel {
         let normalizedForwardXZ = normalize(forwardXZ)
         let yaw = -atan2(normalizedForwardXZ.x, -normalizedForwardXZ.z)
         
-        // Save yaw for later use
-        worldAnchorYaw = yaw
-        
         // Use detected floor Y coordinate if available, otherwise use preview position Y
         let floorY = detectedFloorY ?? finalPosition.y
         
-        // Create WorldAnchor at preview position with floor Y coordinate
-        // This ensures PLY origin (0,0,0) is placed at the floor level
+        // Build transform with both translation AND rotation (yaw embedded in anchor)
         let anchorPosition = SIMD3<Float>(finalPosition.x, floorY, finalPosition.z)
+        let rotationMatrix = matrix4x4_rotation(radians: yaw, axis: SIMD3<Float>(0, 1, 0))
+        let translationMatrix = matrix4x4_translation(anchorPosition.x, anchorPosition.y, anchorPosition.z)
+        let transform = translationMatrix * rotationMatrix
         
-        var transform = matrix_identity_float4x4
-        transform.columns.3 = SIMD4<Float>(anchorPosition.x, anchorPosition.y, anchorPosition.z, 1.0)
+        await worldAnchorManager.placeAnchor(transform: transform)
         
-        let worldAnchor = WorldAnchor(originFromAnchorTransform: transform)
-        
-        do {
-            try await worldTracking.addAnchor(worldAnchor)
-            saveWorldAnchorID(worldAnchor.id)
-            updateWorldAnchor(worldAnchor)  // This sets self.worldAnchor immediately
-            print("[AppModel] ✅ WorldAnchor created and saved: \(worldAnchor.id)")
-            print("[AppModel] ✅ Placement confirmed at position: \(anchorPosition) (floor Y: \(floorY), yaw: \(yaw * 180 / .pi)°)")
-            
-            // Verify the anchor was added successfully by checking allAnchors
-            try? await Task.sleep(for: .milliseconds(500))
-            if let allAnchors = await worldTracking.allAnchors {
-                let anchorExists = allAnchors.contains { anchor in
-                    guard let wa = anchor as? WorldAnchor else { return false }
-                    return wa.id == worldAnchor.id
-                }
-                
-                if anchorExists {
-                    print("[AppModel] ✅ Verified: New anchor is being tracked by ARKit")
-                } else {
-                    print("[AppModel] ⚠️ Warning: New anchor not found in ARKit's tracked anchors")
-                }
-            }
-            
-            // Don't enter point cloud mode - return to window instead
-            // Point cloud mode will be entered when user presses "Start"
-            print("[AppModel] 💡 Ready to close immersive space and return to window")
-        } catch {
-            print("[AppModel] ❌ Failed to save WorldAnchor: \(error)")
-        }
+        print("[AppModel] ✅ Placement confirmed at position: \(anchorPosition) (floor Y: \(floorY), yaw: \(yaw * 180 / .pi)°)")
+        print("[AppModel] 💡 Ready to close immersive space and return to window")
     }
 }
 

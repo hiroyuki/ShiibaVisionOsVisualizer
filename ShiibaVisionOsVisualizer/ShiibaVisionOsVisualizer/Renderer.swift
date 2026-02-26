@@ -8,6 +8,7 @@
 import AVFoundation
 import CompositorServices
 import Metal
+import os
 import simd
 
 // The 256 byte aligned size of our uniform structure
@@ -53,6 +54,13 @@ final class RendererTaskExecutor: TaskExecutor {
     static var shared: RendererTaskExecutor = RendererTaskExecutor()
 }
 
+struct SharedRenderState: Sendable {
+    var displayMode: AppModel.DisplayMode = .pointCloud
+    var anchorTransform: matrix_float4x4? = nil
+}
+
+nonisolated let sharedRenderState = OSAllocatedUnfairLock(initialState: SharedRenderState())
+
 actor Renderer {
 
     let device: MTLDevice
@@ -79,9 +87,6 @@ actor Renderer {
     
     // Cached display mode (updated from main actor)
     var currentDisplayMode: AppModel.DisplayMode = .pointCloud
-    
-    // Cached world anchor for rendering (updated when anchor changes)
-    var cachedWorldAnchor: WorldAnchor?
     
     // Cached simulator flag
     var isRunningOnSimulator: Bool = false
@@ -167,11 +172,6 @@ actor Renderer {
         Task {
             await startFloorDetection()
         }
-        
-        // Monitor world anchor updates to restore saved anchor (in background)
-        Task {
-            await monitorWorldAnchors()
-        }
     }
     
     // Helper to set simulator flag from async context
@@ -179,122 +179,6 @@ actor Renderer {
         self.isRunningOnSimulator = flag
     }
     
-    private func monitorWorldAnchors() async {
-        let savedAnchorID = await appModel.worldAnchorID
-        
-        if let savedAnchorID = savedAnchorID {
-            print("[Renderer] Monitoring for world anchor (preferred ID: \(savedAnchorID))")
-        } else {
-            print("[Renderer] No saved anchor ID, will use first available world anchor")
-        }
-        
-        // Track if we've found the preferred anchor
-        var foundPreferredAnchor = false
-        var anchorSearchTimeout: Task<Void, Never>? = nil
-        var isAnchorSearchTimedOut = false
-
-        // If we have a preferred anchor, start a timeout to use fallback if not found
-        if savedAnchorID != nil {
-            anchorSearchTimeout = Task {
-                try? await Task.sleep(for: .seconds(5))
-                if !foundPreferredAnchor && cachedWorldAnchor == nil {
-                    print("[Renderer] ⏰ Timeout: accepting any available anchor as fallback")
-                    isAnchorSearchTimedOut = true
-                }
-            }
-        }
-        
-        for await update in worldTracking.anchorUpdates {
-            print("[Renderer] Received anchor update: \(update.anchor.id), event: \(update.event)")
-            
-            guard let worldAnchor = update.anchor as? WorldAnchor else {
-                print("[Renderer] Anchor is not a WorldAnchor, skipping")
-                continue
-            }
-            
-            print("[Renderer] WorldAnchor detected: \(worldAnchor.id)")
-            
-            // Determine if we should accept this anchor
-            let isPreferredAnchor = savedAnchorID != nil && worldAnchor.id == savedAnchorID
-            
-            if isPreferredAnchor {
-                foundPreferredAnchor = true
-                anchorSearchTimeout?.cancel()
-            }
-            
-            // Accept anchor if:
-            // 1. It's the preferred anchor (ALWAYS accept - will replace cache)
-            // 2. No cache yet and no saved ID (use first available)
-            // 3. No cache yet and search timed out (fallback to any anchor)
-            let shouldAccept = isPreferredAnchor ||
-                              (cachedWorldAnchor == nil && savedAnchorID == nil) ||
-                              (cachedWorldAnchor == nil && isAnchorSearchTimedOut)
-            
-            // Preferred anchor ALWAYS replaces cache
-            let shouldReplaceCache = isPreferredAnchor || cachedWorldAnchor == nil
-            
-            if shouldAccept {
-                switch update.event {
-                case .added, .updated:
-                    // Update AppModel with this anchor
-                    await appModel.updateWorldAnchor(worldAnchor)
-                    
-                    // Cache the world anchor for rendering (preferred anchor replaces cache)
-                    if shouldReplaceCache {
-                        let wasReplacing = cachedWorldAnchor != nil
-                        self.cachedWorldAnchor = worldAnchor
-                        
-                        // Extract position from anchor
-                        let anchorTransform = worldAnchor.originFromAnchorTransform
-                        let anchorPosition = SIMD3<Float>(
-                            anchorTransform.columns.3.x,
-                            anchorTransform.columns.3.y,
-                            anchorTransform.columns.3.z
-                        )
-                        
-                        print("[Renderer] 🔍 Anchor transform: \(anchorTransform)")
-                        print("[Renderer] 🔍 Extracted position: \(anchorPosition)")
-                        
-                        // Get saved yaw angle from AppModel
-                        let yaw = await appModel.worldAnchorYaw
-                        
-                        // Get floor Y coordinate from AppModel
-                        let floorY = await appModel.detectedFloorY ?? 0.0
-                        
-                        // Create transform: Translation * Rotation(Y-axis)
-                        let rotationMatrix = matrix4x4_rotation(radians: yaw, axis: SIMD3<Float>(0, 1, 0))
-                        let translationMatrix = matrix4x4_translation(anchorPosition.x, floorY, anchorPosition.z)
-                        let matrix = translationMatrix * rotationMatrix
-                        
-                        pointCloudRenderer.modelMatrix = matrix
-                        
-                        if isPreferredAnchor {
-                            if wasReplacing {
-                                print("[Renderer] ✅✅ Preferred anchor REPLACED old cache at position: (\(anchorPosition.x), \(floorY), \(anchorPosition.z)), yaw: \(yaw * 180 / .pi)°, ID: \(worldAnchor.id)")
-                            } else {
-                                print("[Renderer] ✅ Preferred world anchor restored/updated at position: (\(anchorPosition.x), \(floorY), \(anchorPosition.z)), yaw: \(yaw * 180 / .pi)°, ID: \(worldAnchor.id)")
-                            }
-                        } else {
-                            print("[Renderer] ✅ World anchor cached (fallback) at position: (\(anchorPosition.x), \(floorY), \(anchorPosition.z)), yaw: \(yaw * 180 / .pi)°, ID: \(worldAnchor.id)")
-                        }
-                    }
-                case .removed:
-                    print("[Renderer] World anchor removed: \(worldAnchor.id)")
-                    if cachedWorldAnchor?.id == worldAnchor.id {
-                        cachedWorldAnchor = nil
-                        print("[Renderer] ⚠️ Cached anchor was removed")
-                        foundPreferredAnchor = false
-                    }
-                }
-            } else {
-                if cachedWorldAnchor != nil {
-                    print("[Renderer] Ignoring anchor ID: \(worldAnchor.id) (already have cached anchor: \(cachedWorldAnchor?.id.uuidString ?? "none"))")
-                } else {
-                    print("[Renderer] Waiting for preferred anchor, ignoring: \(worldAnchor.id)")
-                }
-            }
-        }
-    }
     
     private var lastFloorDetectionTime: TimeInterval = 0
     private let floorDetectionInterval: TimeInterval = 0.5  // Check every 0.5 seconds
@@ -343,24 +227,16 @@ actor Renderer {
             let simulatorFlag = await appModel.isRunningOnSimulator
             await renderer.setSimulatorFlag(simulatorFlag)
             
-            // Set initial display mode
-            let initialMode = await appModel.displayMode
+            // Set initial display mode from shared state
+            let initialMode = sharedRenderState.withLock { $0.displayMode }
             await renderer.updateDisplayMode(initialMode)
             print("[Renderer] Initial display mode: \(initialMode)")
-            
-            // Initialize cached world anchor from AppModel if available
-            if let existingAnchor = await appModel.worldAnchor {
-                await renderer.setCachedWorldAnchor(existingAnchor)
-                print("[Renderer] ✅ Initialized with existing world anchor: \(existingAnchor.id)")
-            } else {
-                print("[Renderer] ℹ️ No existing world anchor to cache")
-            }
             
             print("[Renderer] Starting AR session...")
             await renderer.startARSession(arSession)
             
             // Start animation or load single frame depending on available files
-            if await appModel.displayMode == .pointCloud {
+            if initialMode == .pointCloud {
                 await renderer.scanAndStartAnimation()
             } else {
                 print("[Renderer] Axes placement mode, skipping PLY load")
@@ -473,13 +349,6 @@ actor Renderer {
             if mode == .pointCloud && currentDisplayMode == .axesPlacement {
                 Task {
                     await scanAndStartAnimation()
-
-                    // Cache the world anchor from AppModel
-                    let worldAnchor = await appModel.worldAnchor
-                    if let worldAnchor = worldAnchor {
-                        await self.setCachedWorldAnchor(worldAnchor)
-                        print("[Renderer] ✅ Cached world anchor for rendering")
-                    }
                 }
             } else if mode == .axesPlacement {
                 pointCloudRenderer.stopAnimation()
@@ -487,11 +356,6 @@ actor Renderer {
             }
         }
         currentDisplayMode = mode
-    }
-    
-    // Helper to set cached anchor from async context
-    private func setCachedWorldAnchor(_ anchor: WorldAnchor) {
-        self.cachedWorldAnchor = anchor
     }
     
     private func updateModelMatrices(_ matrix: matrix_float4x4) {
@@ -564,12 +428,10 @@ actor Renderer {
                 return (true, matrix)
             }
         } else {
-            // Point cloud mode - use cached world anchor with Y=0 and saved rotation
-            if let worldAnchor = cachedWorldAnchor {
-                // Matrix is already set in monitorWorldAnchors() with correct rotation
-                // Just return it from pointCloudRenderer
-                let matrix = pointCloudRenderer.modelMatrix
-                
+            // Point cloud mode - use anchor transform from sharedRenderState
+            // WorldAnchorManager writes originFromAnchorTransform (with rotation) here
+            let anchorTransform = sharedRenderState.withLock { $0.anchorTransform }
+            if let matrix = anchorTransform {
                 if Int.random(in: 0..<240) == 0 {
                     let pos = SIMD3<Float>(matrix.columns.3.x, matrix.columns.3.y, matrix.columns.3.z)
                     print("[Renderer] ☁️ PointCloud at: \(pos)")
@@ -577,7 +439,9 @@ actor Renderer {
                 
                 return (true, matrix)
             } else {
-                print("[Renderer] ⚠️ No world anchor available for point cloud")
+                if Int.random(in: 0..<240) == 0 {
+                    print("[Renderer] ⚠️ No world anchor available for point cloud")
+                }
                 return (false, matrix_identity_float4x4)
             }
         }
@@ -647,11 +511,9 @@ actor Renderer {
         drawable.deviceAnchor = deviceAnchor
         #endif
         
-        // Update display mode asynchronously
-        Task { @MainActor in
-            let newMode = appModel.displayMode
-            await self.updateDisplayMode(newMode)
-        }
+        // Read display mode from shared state (synchronous, no MainActor hop)
+        let newMode = sharedRenderState.withLock { $0.displayMode }
+        self.updateDisplayMode(newMode)
         
         // Synchronously update matrices before rendering
         let (shouldRender, matrixToUse) = self.updateRenderState(deviceAnchor: deviceAnchor)

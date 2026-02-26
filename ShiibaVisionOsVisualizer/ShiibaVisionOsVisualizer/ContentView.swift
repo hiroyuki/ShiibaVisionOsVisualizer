@@ -183,7 +183,7 @@ struct ContentView: View {
                 
                 if appModel.worldAnchorID != nil {
                     Button(role: .destructive) {
-                        appModel.clearAnchor()
+                        appModel.worldAnchorManager.clearAnchor()
                     } label: {
                         Label("アンカーをクリア", systemImage: "trash")
                     }
