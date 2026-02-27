@@ -97,8 +97,11 @@ actor Renderer {
     // Axes renderer for placement mode
     let axesRenderer: AxesRenderer
 
-    // Audio player for synchronized playback
-    var audioPlayer: AVPlayer?
+    // Spatial audio engine
+    private var audioEngine: AVAudioEngine?
+    private var playerNode: AVAudioPlayerNode?
+    private var environmentNode: AVAudioEnvironmentNode?
+    private var audioFile: AVAudioFile?
 
     // Cached scan results (avoid repeated iCloud directory scans)
     private var cachedPLYURLs: [URL]?  // nil = not yet scanned
@@ -316,13 +319,17 @@ actor Renderer {
         if let audioURL = scanAudioFile() {
             prepareAudio(url: audioURL)
         }
-        let player = self.audioPlayer  // actor内でキャプチャ
+        let pNode = self.playerNode  // actor内でキャプチャ
 
         if urls.count > 1 {
             pointCloudRenderer.startAnimation(frameURLs: urls, audioTime: {
-                return player?.currentTime().seconds
+                guard let node = pNode, node.isPlaying,
+                      let nodeTime = node.lastRenderTime,
+                      nodeTime.isSampleTimeValid,
+                      let playerTime = node.playerTime(forNodeTime: nodeTime) else { return nil }
+                return Double(playerTime.sampleTime) / playerTime.sampleRate
             }, startPlayback: {
-                player?.play()
+                pNode?.play()
             })
         } else if let url = urls.first {
             // シングルフレーム（シミュレーター等）: 従来方式
@@ -342,15 +349,99 @@ actor Renderer {
     }
 
     private func prepareAudio(url: URL) {
-        audioPlayer = AVPlayer(url: url)
-        // play()はstartPlaybackコールバック内で呼ぶ（最初のPLYフレームロード完了後）
-        print("[Renderer] 🎵 Audio prepared: \(url.lastPathComponent)")
+        let engine = AVAudioEngine()
+        let player = AVAudioPlayerNode()
+        let environment = AVAudioEnvironmentNode()
+
+        engine.attach(player)
+        engine.attach(environment)
+
+        do {
+            let file = try AVAudioFile(forReading: url)
+
+            // Create mono format for spatial audio (environment node requires mono input)
+            guard let monoFormat = AVAudioFormat(
+                standardFormatWithSampleRate: file.processingFormat.sampleRate,
+                channels: 1
+            ) else {
+                print("[Renderer] ❌ Failed to create mono format")
+                return
+            }
+
+            // Connect: player -> environment (mono) -> mainMixer
+            engine.connect(player, to: environment, format: monoFormat)
+            engine.connect(environment, to: engine.mainMixerNode, format: nil)
+
+            // Configure spatial audio rendering
+            player.renderingAlgorithm = .HRTFHQ
+            player.sourceMode = .pointSource
+
+            // Distance attenuation
+            environment.distanceAttenuationParameters.distanceAttenuationModel = .exponential
+            environment.distanceAttenuationParameters.rolloffFactor = 2.0  // inverse-square: gain = (refDist/dist)^2
+            environment.distanceAttenuationParameters.referenceDistance = 1.0
+            environment.distanceAttenuationParameters.maximumDistance = 50.0
+
+            // Schedule file for playback (don't play yet)
+            player.scheduleFile(file, at: nil)
+
+            try engine.start()
+
+            self.audioEngine = engine
+            self.playerNode = player
+            self.environmentNode = environment
+            self.audioFile = file
+
+            print("[Renderer] 🎵 Spatial audio prepared: \(url.lastPathComponent)")
+        } catch {
+            print("[Renderer] ❌ Spatial audio setup failed: \(error)")
+        }
     }
 
     private func stopAudio() {
-        audioPlayer?.pause()
-        audioPlayer = nil
-        print("[Renderer] 🔇 Audio stopped")
+        playerNode?.stop()
+        audioEngine?.stop()
+
+        if let engine = audioEngine {
+            if let player = playerNode { engine.detach(player) }
+            if let env = environmentNode { engine.detach(env) }
+        }
+
+        audioEngine = nil
+        playerNode = nil
+        environmentNode = nil
+        audioFile = nil
+        print("[Renderer] 🔇 Spatial audio stopped")
+    }
+
+    /// 毎フレーム呼び出し: リスナー位置とソース位置を更新
+    private func updateSpatialAudioPositions(deviceAnchor: DeviceAnchor?) {
+        guard let environment = environmentNode, let player = playerNode else { return }
+
+        // Update listener position/orientation from device anchor
+        if let deviceAnchor = deviceAnchor {
+            let t = deviceAnchor.originFromAnchorTransform
+            environment.listenerPosition = AVAudio3DPoint(
+                x: t.columns.3.x, y: t.columns.3.y, z: t.columns.3.z
+            )
+            // Forward = -Z column, Up = Y column
+            let forward = AVAudio3DVector(
+                x: -t.columns.2.x, y: -t.columns.2.y, z: -t.columns.2.z
+            )
+            let up = AVAudio3DVector(
+                x: t.columns.1.x, y: t.columns.1.y, z: t.columns.1.z
+            )
+            environment.listenerVectorOrientation = AVAudio3DVectorOrientation(
+                forward: forward, up: up
+            )
+        }
+
+        // Source position: anchor transform + 1.5m above
+        let anchorTransform = sharedRenderState.withLock { $0.anchorTransform }
+        if let matrix = anchorTransform {
+            let pos = matrix.columns.3
+            player.position = AVAudio3DPoint(x: pos.x, y: pos.y + 1.5, z: pos.z)
+        }
     }
 
     private func updateDisplayMode(_ mode: AppModel.DisplayMode) {
@@ -536,6 +627,9 @@ actor Renderer {
             self.axesRenderer.modelMatrix = matrixToUse
             self.uniforms[0].modelMatrix = matrixToUse
         }
+
+        // Update spatial audio listener/source positions each frame
+        updateSpatialAudioPositions(deviceAnchor: deviceAnchor)
 
         if perDrawableTarget[drawable.target] == nil {
             perDrawableTarget[drawable.target] = .init(drawable: drawable)
