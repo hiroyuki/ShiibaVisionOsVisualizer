@@ -608,10 +608,10 @@ actor Renderer {
     private func oscRemoveAnchor() {
         let osc = oscManager
         Task { @MainActor in
-            await appModel.worldAnchorManager.removeAllAnchors()
-            appModel.worldAnchorManager.clearAnchor()
-            osc?.send(OSCMessage(address: "/anchorRemoved"))
-            print("[OSC] Anchor removed")
+            let removed = await appModel.worldAnchorManager.removeCurrentAnchor()
+            if removed {
+                osc?.send(OSCMessage(address: "/anchorRemoved"))
+            }
         }
     }
 

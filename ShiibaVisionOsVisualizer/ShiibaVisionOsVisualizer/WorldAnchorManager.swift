@@ -78,6 +78,24 @@ class WorldAnchorManager {
         }
     }
 
+    /// 現在見つかっているアンカーのみ削除する。見つかっていなければ何もしない。
+    /// - Returns: 削除に成功したら true
+    func removeCurrentAnchor() async -> Bool {
+        guard let currentAnchor = anchor else {
+            print("[WorldAnchorManager] ℹ️ No tracked anchor to remove")
+            return false
+        }
+        do {
+            try await worldTracking.removeAnchor(currentAnchor)
+            clearAnchor()
+            print("[WorldAnchorManager] ✅ Removed anchor: \(currentAnchor.id)")
+            return true
+        } catch {
+            print("[WorldAnchorManager] ⚠️ removeAnchor failed: \(error)")
+            return false
+        }
+    }
+
     /// anchorUpdates 監視を開始する（重複呼び出しは無視）
     func startMonitoring() {
         guard monitorTask == nil else {
