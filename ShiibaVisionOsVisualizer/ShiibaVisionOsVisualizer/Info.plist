@@ -4,6 +4,12 @@
 <dict>
 	<key>NSWorldSensingUsageDescription</key>
 	<string>This app detects the floor to place point clouds accurately in your space.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>This app uses OSC (Open Sound Control) to receive playback commands and send status updates on the local network.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_osc._udp</string>
+	</array>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationPreferredDefaultSceneSessionRole</key>

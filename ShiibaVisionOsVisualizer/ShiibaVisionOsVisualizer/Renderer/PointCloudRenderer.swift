@@ -9,6 +9,7 @@ import ARKit
 import CompositorServices
 import Foundation
 import Metal
+import os
 import simd
 
 // MARK: - Buffer index constants (mirrors ShaderTypes.h)
@@ -48,6 +49,16 @@ final class PointCloudRenderer {
     private var _pendingFrame: PointCloudData? = nil
     private var onFirstFrameRendered: (() -> Void)?
     private var _audioPlaybackStarted = false  // encode()からアニメーションループへの通知
+
+    // MARK: - Playback Control (OSC)
+
+    private struct PlaybackControl: Sendable {
+        var isPaused: Bool = false
+        var seekTarget: Int? = nil
+        var currentFrameIndex: Int = 0
+    }
+
+    private let playbackControl = OSAllocatedUnfairLock(initialState: PlaybackControl())
 
     // MARK: - Placement
 
@@ -142,11 +153,35 @@ final class PointCloudRenderer {
             guard !Task.isCancelled else { return }
 
             // === Phase 2: オーディオ開始 — 絶対タイムラインで再生 ===
-            let animationStart = clock.now  // オーディオと同時にタイムライン開始
+            var animationStart = clock.now  // オーディオと同時にタイムライン開始
             var frameIndex = 1  // frame 0は既にPhase 1でロード済み
+            var pauseStart: ContinuousClock.Instant? = nil
 
             while !Task.isCancelled {
+                // ポーズ処理
+                if self.playbackControl.withLock({ $0.isPaused }) {
+                    if pauseStart == nil { pauseStart = clock.now }
+                    try? await Task.sleep(for: .milliseconds(50))
+                    continue
+                } else if let ps = pauseStart {
+                    // resume: 絶対タイムラインをポーズ分だけシフト
+                    animationStart = animationStart + (clock.now - ps)
+                    pauseStart = nil
+                }
+
+                // シーク処理
+                if let target = self.playbackControl.withLock({
+                    let t = $0.seekTarget; $0.seekTarget = nil; return t
+                }) {
+                    frameIndex = target
+                    // 絶対タイムラインを再計算
+                    animationStart = clock.now - Duration.nanoseconds(frameDurationNs * Int64(target))
+                }
+
                 let url = frameURLs[frameIndex % frameURLs.count]
+
+                // フレームインデックス更新
+                self.playbackControl.withLock { $0.currentFrameIndex = frameIndex }
 
                 do {
                     let data = try await loader.load(url: url, device: self.device)
@@ -164,7 +199,7 @@ final class PointCloudRenderer {
                 }
 
                 // 同期ログ（30フレームごと ≒ 約1秒間隔）
-                if let audioTime, frameIndex % 30 == 0 {
+                if let audioTime, frameIndex % 300 == 0 {
                     let plyTime = Double(frameIndex) / 30.0
                     let audioSec = audioTime() ?? -1
                     let drift = plyTime - audioSec
@@ -186,7 +221,36 @@ final class PointCloudRenderer {
             _pendingFrame = nil
             _audioPlaybackStarted = false
         }
+        playbackControl.withLock {
+            $0.isPaused = false
+            $0.seekTarget = nil
+            $0.currentFrameIndex = 0
+        }
         framesConsumed = 0
+    }
+
+    // MARK: - Playback Control API
+
+    func pauseAnimation() {
+        playbackControl.withLock { $0.isPaused = true }
+    }
+
+    func resumeAnimation() {
+        playbackControl.withLock { $0.isPaused = false }
+    }
+
+    func seekAnimation(to frameIndex: Int) {
+        playbackControl.withLock { $0.seekTarget = frameIndex }
+    }
+
+    var animationFrameIndex: Int {
+        playbackControl.withLock { $0.currentFrameIndex }
+    }
+
+    /// 表示データをクリア（/stop時にポイントクラウドを非表示にする）
+    func clearDisplay() {
+        pointCloudData = nil
+        isConverted = false
     }
 
     /// 単一フレームをURLからロード（シミュレーター用フォールバック）

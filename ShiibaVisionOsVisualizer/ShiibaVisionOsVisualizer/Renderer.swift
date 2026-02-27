@@ -107,6 +107,17 @@ actor Renderer {
     private var environmentNode: AVAudioEnvironmentNode?
     private var audioFile: AVAudioFile?
 
+    // OSC
+    enum PlaybackState { case stopped, playing, paused }
+    private var playbackState: PlaybackState = .stopped
+    private var oscManager: OSCManager?
+
+    private enum OSCCommand: Sendable {
+        case play, pause, resume, stop, rewind
+        case seek(Int)
+    }
+    private nonisolated let oscCommandQueue = OSAllocatedUnfairLock(initialState: [OSCCommand]())
+
     // Cached scan results (avoid repeated iCloud directory scans)
     private var cachedPLYURLs: [URL]?  // nil = not yet scanned
 
@@ -268,6 +279,9 @@ actor Renderer {
             print("[Renderer] Starting AR session...")
             await renderer.startARSession(arSession)
             
+            // OSC setup (before animation so /played can be sent)
+            await renderer.setupOSC()
+            
             // Start animation or load single frame depending on available files
             if initialMode == .pointCloud {
                 await renderer.scanAndStartAnimation()
@@ -357,9 +371,12 @@ actor Renderer {
             }, startPlayback: {
                 pNode?.play()
             })
+            playbackState = .playing
+            oscManager?.send(OSCMessage(address: "/played"))
         } else if let url = urls.first {
             // シングルフレーム（シミュレーター等）: 従来方式
             await pointCloudRenderer.loadSingleFrame(url: url)
+            playbackState = .playing
         }
     }
 
@@ -438,6 +455,143 @@ actor Renderer {
         environmentNode = nil
         audioFile = nil
         print("[Renderer] 🔇 Spatial audio stopped")
+    }
+
+    // MARK: - OSC Setup & Playback Control
+
+    private func setupOSC() {
+        let cmdQueue = self.oscCommandQueue
+        let manager = OSCManager { message in
+            let command: OSCCommand?
+            switch message.address {
+            case "/play":    command = .play
+            case "/pause":   command = .pause
+            case "/resume":  command = .resume
+            case "/stop":    command = .stop
+            case "/rewind":  command = .rewind
+            case "/seek":
+                if case .int32(let frame) = message.arguments.first {
+                    command = .seek(Int(frame))
+                } else { command = nil }
+            default:
+                print("[OSC] Unknown address: \(message.address)")
+                command = nil
+            }
+            if let command {
+                cmdQueue.withLock { $0.append(command) }
+            }
+        }
+        manager.start()
+        self.oscManager = manager
+        print("[Renderer] OSC ready (recv: \(OSCManager.receivePort), send: \(OSCManager.sendHost):\(OSCManager.sendPort))")
+    }
+
+    /// レンダーループから毎フレーム呼ばれ、キューに溜まったOSCコマンドを処理
+    private func processOSCCommands() {
+        let commands = oscCommandQueue.withLock {
+            let cmds = $0
+            $0.removeAll()
+            return cmds
+        }
+        for command in commands {
+            switch command {
+            case .play:    oscPlay()
+            case .pause:   oscPause()
+            case .resume:  oscResume()
+            case .stop:    oscStop()
+            case .rewind:  oscRewind()
+            case .seek(let frame): oscSeek(to: frame)
+            }
+        }
+    }
+
+    private func oscPlay() {
+        guard playbackState == .stopped else { return }
+
+        // Re-scan + prepare audio + start animation (all synchronous for multi-frame)
+        let urls: [URL]
+        if let cached = cachedPLYURLs {
+            urls = cached
+        } else {
+            urls = scanICloudPLYFiles()
+            cachedPLYURLs = urls
+        }
+        guard !urls.isEmpty else {
+            print("[OSC] Play: no PLY files found")
+            return
+        }
+
+        if let audioURL = scanAudioFile() {
+            prepareAudio(url: audioURL)
+        }
+        let pNode = self.playerNode
+
+        pointCloudRenderer.startAnimation(frameURLs: urls, audioTime: {
+            guard let node = pNode, node.isPlaying,
+                  let nodeTime = node.lastRenderTime,
+                  nodeTime.isSampleTimeValid,
+                  let playerTime = node.playerTime(forNodeTime: nodeTime) else { return nil }
+            return Double(playerTime.sampleTime) / playerTime.sampleRate
+        }, startPlayback: {
+            pNode?.play()
+        })
+
+        playbackState = .playing
+        oscManager?.send(OSCMessage(address: "/played"))
+        print("[OSC] Play")
+    }
+
+    private func oscPause() {
+        guard playbackState == .playing else { return }
+        pointCloudRenderer.pauseAnimation()
+        playerNode?.pause()
+        playbackState = .paused
+        oscManager?.send(OSCMessage(address: "/paused"))
+        print("[OSC] Paused")
+    }
+
+    private func oscResume() {
+        guard playbackState == .paused else { return }
+        pointCloudRenderer.resumeAnimation()
+        playerNode?.play()
+        playbackState = .playing
+        oscManager?.send(OSCMessage(address: "/resumed"))
+        print("[OSC] Resumed")
+    }
+
+    private func oscStop() {
+        pointCloudRenderer.stopAnimation()
+        pointCloudRenderer.clearDisplay()
+        stopAudio()
+        playbackState = .stopped
+        oscManager?.send(OSCMessage(address: "/stopped"))
+        print("[OSC] Stopped")
+    }
+
+    private func oscSeek(to frameIndex: Int) {
+        guard playbackState != .stopped else { return }
+        pointCloudRenderer.seekAnimation(to: frameIndex)
+        seekAudio(to: frameIndex)
+        oscManager?.send(OSCMessage(address: "/seeked", arguments: [.int32(Int32(frameIndex))]))
+        print("[OSC] Seeked to frame \(frameIndex)")
+    }
+
+    private func oscRewind() {
+        oscSeek(to: 0)
+    }
+
+    private func seekAudio(to frameIndex: Int) {
+        guard let player = playerNode, let file = audioFile else { return }
+        let targetTime = Double(frameIndex) / 30.0
+        let startFrame = AVAudioFramePosition(targetTime * file.processingFormat.sampleRate)
+        guard startFrame < file.length else { return }
+        let remaining = AVAudioFrameCount(file.length - startFrame)
+
+        let wasPlaying = player.isPlaying
+        player.stop()
+        player.scheduleSegment(file, startingFrame: startFrame,
+                               frameCount: remaining, at: nil)
+        if wasPlaying { player.play() }
     }
 
     /// 毎フレーム呼び出し: リスナー位置とソース位置を更新
@@ -766,10 +920,16 @@ actor Renderer {
     func renderLoop() {
         print("render loop started")
         while true {
+            // Process pending OSC commands each frame
+            processOSCCommands()
+
             if layerRenderer.state == .invalidated {
                 print("Layer is invalidated")
                 pointCloudRenderer.stopAnimation()
                 stopAudio()
+                oscManager?.send(OSCMessage(address: "/stopped"))
+                oscManager?.stop()
+                playbackState = .stopped
                 Task { @MainActor in
                     appModel.immersiveSpaceState = .closed
                 }
