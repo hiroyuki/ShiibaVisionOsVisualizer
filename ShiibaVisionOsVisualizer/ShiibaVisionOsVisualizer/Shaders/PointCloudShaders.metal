@@ -40,6 +40,30 @@ struct PointFragIn {
     float2 uv;       // [-1, 1] range, used for circular clipping in fragment shader
 };
 
+// MARK: - Background Overlay
+
+/// Full-screen triangle for semi-transparent background overlay.
+/// Uses a single oversized triangle (3 vertices) to cover the entire viewport.
+struct OverlayOut {
+    float4 position [[position]];
+};
+
+vertex OverlayOut overlayVertex(uint vertexID [[ vertex_id ]]) {
+    // Oversized triangle covering the full NDC quad [-1,1]
+    float2 pos[3] = {
+        float2(-1.0, -3.0),
+        float2(-1.0,  1.0),
+        float2( 3.0,  1.0)
+    };
+    OverlayOut out;
+    out.position = float4(pos[vertexID], 0.0001, 1.0);
+    return out;
+}
+
+fragment float4 overlayFragment() {
+    return float4(0.0, 0.0, 0.0, 0.8);
+}
+
 // MARK: - Compute Shader
 
 /// Converts point cloud data from Unity format to VisionOS format.

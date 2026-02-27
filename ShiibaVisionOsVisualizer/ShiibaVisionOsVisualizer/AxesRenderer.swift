@@ -153,11 +153,26 @@ final class AxesRenderer {
     ) {
         guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor) else { return }
         encoder.label = "Axes Render"
-        
+        renderInto(encoder: encoder, uniformsBuffer: uniformsBuffer, uniformsOffset: uniformsOffset,
+                   viewProjectionBuffer: viewProjectionBuffer, viewProjectionOffset: viewProjectionOffset,
+                   viewports: viewports, viewCount: viewCount)
+        encoder.endEncoding()
+    }
+
+    /// Draw axes into an existing render command encoder (no endEncoding).
+    func renderInto(
+        encoder: MTLRenderCommandEncoder,
+        uniformsBuffer: MTLBuffer,
+        uniformsOffset: Int,
+        viewProjectionBuffer: MTLBuffer,
+        viewProjectionOffset: Int,
+        viewports: [MTLViewport],
+        viewCount: Int
+    ) {
         encoder.setRenderPipelineState(renderPipeline)
         encoder.setDepthStencilState(depthState)
         encoder.setViewports(viewports)
-        
+
         if viewCount > 1 {
             var viewMappings = (0..<viewCount).map {
                 MTLVertexAmplificationViewMapping(
@@ -167,19 +182,10 @@ final class AxesRenderer {
             }
             encoder.setVertexAmplificationCount(viewCount, viewMappings: &viewMappings)
         }
-        
-        // Bind vertex buffer
+
         encoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
-        
-        // Bind uniforms (model matrix)
-        encoder.setVertexBuffer(uniformsBuffer, offset: uniformsOffset, index: 2) // BufferIndexUniforms
-        
-        // Bind view-projection matrices
-        encoder.setVertexBuffer(viewProjectionBuffer, offset: viewProjectionOffset, index: 3) // BufferIndexViewProjection
-        
-        // Draw as triangles (3 axes * 2 triangles per axis * 3 vertices per triangle = 18 vertices)
+        encoder.setVertexBuffer(uniformsBuffer, offset: uniformsOffset, index: 2)
+        encoder.setVertexBuffer(viewProjectionBuffer, offset: viewProjectionOffset, index: 3)
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 18)
-        
-        encoder.endEncoding()
     }
 }

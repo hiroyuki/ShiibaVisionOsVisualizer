@@ -77,7 +77,12 @@ class AppModel {
     init() {
         worldAnchorManager = WorldAnchorManager(worldTracking: worldTracking)
         worldAnchorManager.loadSavedAnchorID()
-        
+
+        // iCloud prefetch (ImmersiveSpace直接起動時はContentViewが表示されないため)
+        Task.detached(priority: .utility) {
+            Self.prefetchiCloudFiles()
+        }
+
         if isRunningOnSimulator {
             print("[AppModel] 🖥️ Running on simulator - ARKit disabled")
             isARSessionRunning = true
@@ -96,6 +101,33 @@ class AppModel {
         }
     }
     
+    private nonisolated static func prefetchiCloudFiles() {
+        guard let iCloudBase = ICloudContainer.shimojuURL else {
+            print("[iCloud prefetch] ❌ container not found")
+            return
+        }
+        print("[iCloud] container URL: \(iCloudBase.path)")
+
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: iCloudBase,
+            includingPropertiesForKeys: [.ubiquitousItemDownloadingStatusKey]
+        ) else {
+            print("[iCloud prefetch] ❌ cannot list files")
+            return
+        }
+        print("[iCloud] ✅ files count: \(files.count)")
+
+        var requested = 0
+        for file in files {
+            let status = try? file.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey])
+            if status?.ubiquitousItemDownloadingStatus != .current {
+                try? FileManager.default.startDownloadingUbiquitousItem(at: file)
+                requested += 1
+            }
+        }
+        print("[iCloud prefetch] ✅ download requested: \(requested) files")
+    }
+
     private func startARSession() async {
         guard !isARSessionRunning else { return }
         

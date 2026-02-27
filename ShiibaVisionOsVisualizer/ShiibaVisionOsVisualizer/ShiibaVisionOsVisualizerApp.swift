@@ -45,7 +45,7 @@ struct ShiibaVisionOsVisualizerApp: App {
         }
 
         // Main immersive space (handles both placement and point cloud display)
-        ImmersiveSpace(id: appModel.immersiveSpaceID) {
+        ImmersiveSpace {
             ImmersiveSpaceContent(appModel: appModel)
         }
         .immersionStyle(selection: .constant(.mixed), in: .mixed)

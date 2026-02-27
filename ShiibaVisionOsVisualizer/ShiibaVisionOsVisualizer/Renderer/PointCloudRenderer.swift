@@ -288,7 +288,24 @@ final class PointCloudRenderer {
     ) {
         guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor) else { return }
         encoder.label = "PointCloud Render"
+        renderInto(encoder: encoder, data: data,
+                   uniformsBuffer: uniformsBuffer, uniformsOffset: uniformsOffset,
+                   viewProjectionBuffer: viewProjectionBuffer, viewProjectionOffset: viewProjectionOffset,
+                   viewports: viewports, viewCount: viewCount)
+        encoder.endEncoding()
+    }
 
+    /// Draw point cloud into an existing render command encoder (no endEncoding).
+    func renderInto(
+        encoder: MTLRenderCommandEncoder,
+        data: PointCloudData,
+        uniformsBuffer: MTLBuffer,
+        uniformsOffset: Int,
+        viewProjectionBuffer: MTLBuffer,
+        viewProjectionOffset: Int,
+        viewports: [MTLViewport],
+        viewCount: Int
+    ) {
         encoder.setRenderPipelineState(renderPipeline)
         encoder.setDepthStencilState(depthState)
         encoder.setViewports(viewports)
@@ -303,28 +320,36 @@ final class PointCloudRenderer {
             encoder.setVertexAmplificationCount(viewCount, viewMappings: &viewMappings)
         }
 
-        // Bind uniforms (model matrix)
-        encoder.setVertexBuffer(uniformsBuffer,
-                                offset: uniformsOffset,
-                                index: kBufferIndexUniforms)
+        encoder.setVertexBuffer(uniformsBuffer, offset: uniformsOffset, index: kBufferIndexUniforms)
+        encoder.setVertexBuffer(viewProjectionBuffer, offset: viewProjectionOffset, index: kBufferIndexViewProjection)
+        encoder.setVertexBuffer(data.outputBuffer, offset: 0, index: kBufferIndexPointCloudOutput)
 
-        // Bind view-projection matrices
-        encoder.setVertexBuffer(viewProjectionBuffer,
-                                offset: viewProjectionOffset,
-                                index: kBufferIndexViewProjection)
-
-        // Bind converted point data
-        encoder.setVertexBuffer(data.outputBuffer,
-                                offset: 0,
-                                index: kBufferIndexPointCloudOutput)
-
-        // Draw as instanced quads (6 vertices = 2 triangles per point)
-        // .point is not allowed when a rasterization rate map is active (visionOS foveated rendering)
-        encoder.drawPrimitives(type: .triangle,
-                               vertexStart: 0,
-                               vertexCount: 6,
-                               instanceCount: data.pointCount)
-
-        encoder.endEncoding()
+        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: data.pointCount)
     }
+
+    /// Prepare frame data and run compute pass. Returns true if data is ready to render.
+    func prepareFrame(commandBuffer: MTLCommandBuffer) -> Bool {
+        let next: PointCloudData? = pendingLock.withLock {
+            defer { _pendingFrame = nil }
+            return _pendingFrame
+        }
+        if let next {
+            pointCloudData = next; isConverted = false
+            if framesConsumed == 0 {
+                onFirstFrameRendered?()
+                onFirstFrameRendered = nil
+                pendingLock.withLock { _audioPlaybackStarted = true }
+            }
+            framesConsumed += 1
+        }
+        guard let data = pointCloudData else { return false }
+        if !isConverted {
+            encodeCompute(commandBuffer: commandBuffer, data: data)
+            isConverted = true
+        }
+        return true
+    }
+
+    /// Current point cloud data (for external renderInto calls).
+    var currentData: PointCloudData? { pointCloudData }
 }

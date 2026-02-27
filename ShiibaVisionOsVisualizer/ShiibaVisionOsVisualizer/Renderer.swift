@@ -97,6 +97,10 @@ actor Renderer {
     // Axes renderer for placement mode
     let axesRenderer: AxesRenderer
 
+    // Background overlay (semi-transparent black)
+    let overlayPipeline: MTLRenderPipelineState
+    let overlayDepthState: MTLDepthStencilState
+
     // Spatial audio engine
     private var audioEngine: AVAudioEngine?
     private var playerNode: AVAudioPlayerNode?
@@ -145,6 +149,28 @@ actor Renderer {
             axesRenderer = try AxesRenderer(device: device, library: library, layerRenderer: layerRenderer)
             // Initialize axes at eye level, 1m in front (visible immediately)
             axesRenderer.modelMatrix = matrix4x4_translation(0, 0, -1.0)
+
+            // Background overlay pipeline
+            let overlayDesc = MTLRenderPipelineDescriptor()
+            overlayDesc.label = "Overlay Pipeline"
+            overlayDesc.vertexFunction = library.makeFunction(name: "overlayVertex")!
+            overlayDesc.fragmentFunction = library.makeFunction(name: "overlayFragment")!
+            overlayDesc.rasterSampleCount = device.rasterSampleCount
+            overlayDesc.maxVertexAmplificationCount = layerRenderer.properties.viewCount
+            overlayDesc.depthAttachmentPixelFormat = layerRenderer.configuration.depthFormat
+            let overlayColor = overlayDesc.colorAttachments[0]!
+            overlayColor.pixelFormat = layerRenderer.configuration.colorFormat
+            overlayColor.isBlendingEnabled = true
+            overlayColor.sourceRGBBlendFactor = .sourceAlpha
+            overlayColor.destinationRGBBlendFactor = .oneMinusSourceAlpha
+            overlayColor.sourceAlphaBlendFactor = .one
+            overlayColor.destinationAlphaBlendFactor = .oneMinusSourceAlpha
+            overlayPipeline = try device.makeRenderPipelineState(descriptor: overlayDesc)
+
+            let overlayDepthDesc = MTLDepthStencilDescriptor()
+            overlayDepthDesc.depthCompareFunction = .always
+            overlayDepthDesc.isDepthWriteEnabled = true
+            overlayDepthState = device.makeDepthStencilState(descriptor: overlayDepthDesc)!
         } catch {
             fatalError("Unable to create renderers: \(error)")
         }
@@ -679,15 +705,35 @@ actor Renderer {
 
         let viewports = drawable.views.map { $0.textureMap.viewport }
 
-        // Encode appropriate renderer based on cached display mode
+        // Compute pass for point cloud (must run before render encoder)
+        if currentDisplayMode != .axesPlacement {
+            _ = pointCloudRenderer.prepareFrame(commandBuffer: commandBuffer)
+        }
+
+        // Single render encoder: overlay + content
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor) else { return }
+        encoder.label = "Main Render"
+
+        // 1) Background overlay (20% black over passthrough)
+        encoder.setRenderPipelineState(overlayPipeline)
+        encoder.setDepthStencilState(overlayDepthState)
+        encoder.setViewports(viewports)
+        if drawable.views.count > 1 {
+            var amplifications = drawable.views.indices.map {
+                MTLVertexAmplificationViewMapping(viewportArrayIndexOffset: UInt32($0),
+                                                  renderTargetArrayIndexOffset: UInt32($0))
+            }
+            encoder.setVertexAmplificationCount(drawable.views.count, viewMappings: &amplifications)
+        }
+        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+
+        // 2) Content
         if currentDisplayMode == .axesPlacement {
-            // Render axes for placement
             if Int.random(in: 0..<240) == 0 {
                 print("[Renderer] 🎯 Rendering Axes (model matrix: \(axesRenderer.modelMatrix))")
             }
-            axesRenderer.encode(
-                commandBuffer: commandBuffer,
-                renderPassDescriptor: renderPassDescriptor,
+            axesRenderer.renderInto(
+                encoder: encoder,
                 uniformsBuffer: dynamicUniformBuffer,
                 uniformsOffset: uniformBufferOffset,
                 viewProjectionBuffer: drawableTarget.viewProjectionBuffer,
@@ -695,12 +741,10 @@ actor Renderer {
                 viewports: viewports,
                 viewCount: drawable.views.count
             )
-        } else {
-            // Render point cloud
-            pointCloudRenderer.encode(
-                commandBuffer: commandBuffer,
-                renderPassDescriptor: renderPassDescriptor,
-                uniforms: uniforms[0],
+        } else if let data = pointCloudRenderer.currentData {
+            pointCloudRenderer.renderInto(
+                encoder: encoder,
+                data: data,
                 uniformsBuffer: dynamicUniformBuffer,
                 uniformsOffset: uniformBufferOffset,
                 viewProjectionBuffer: drawableTarget.viewProjectionBuffer,
@@ -709,6 +753,8 @@ actor Renderer {
                 viewCount: drawable.views.count
             )
         }
+
+        encoder.endEncoding()
 
         #if targetEnvironment(simulator)
         // On simulator, encodePresent will produce a warning because we don't have deviceAnchor

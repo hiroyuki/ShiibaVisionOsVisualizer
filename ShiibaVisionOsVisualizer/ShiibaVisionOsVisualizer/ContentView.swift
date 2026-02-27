@@ -201,7 +201,7 @@ struct ContentView: View {
                 prefetchAllFiles()
             }
         }
-        .onChange(of: appModel.immersiveSpaceState) { _, newState in
+.onChange(of: appModel.immersiveSpaceState) { _, newState in
             // Dismiss window when starting point cloud display (not in axes placement mode)
             if newState == .open && appModel.displayMode == .pointCloud {
                 dismissWindow()
