@@ -100,6 +100,9 @@ actor Renderer {
     // Audio player for synchronized playback
     var audioPlayer: AVPlayer?
 
+    // Cached scan results (avoid repeated iCloud directory scans)
+    private var cachedPLYURLs: [URL]?  // nil = not yet scanned
+
     init(_ layerRenderer: LayerRenderer, appModel: AppModel) {
         self.layerRenderer = layerRenderer
         self.device = layerRenderer.device
@@ -130,12 +133,13 @@ actor Renderer {
             .bindMemory(to: Uniforms.self, capacity: 1)
 
         do {
-            pointCloudRenderer = try PointCloudRenderer(device: device, layerRenderer: layerRenderer)
+            let library = device.makeDefaultLibrary()!
+            pointCloudRenderer = try PointCloudRenderer(device: device, library: library, layerRenderer: layerRenderer)
             // Initialize at origin - will be updated by world anchor
             pointCloudRenderer.modelMatrix = matrix_identity_float4x4
             print("[Renderer] ✅ PointCloudRenderer initialized with identity matrix")
-            
-            axesRenderer = try AxesRenderer(device: device, layerRenderer: layerRenderer)
+
+            axesRenderer = try AxesRenderer(device: device, library: library, layerRenderer: layerRenderer)
             // Initialize axes at eye level, 1m in front (visible immediately)
             axesRenderer.modelMatrix = matrix4x4_translation(0, 0, -1.0)
         } catch {
@@ -271,13 +275,9 @@ actor Renderer {
     
     /// iCloud Drive の ShiibaAVP/Shimonju/ から PLY ファイルURLを昇順で返す。
     /// iCloudが使えない場合は Bundle.main にフォールバック。
+    /// 結果はキャッシュされ、2回目以降はディレクトリスキャンをスキップする。
     private nonisolated func scanICloudPLYFiles() -> [URL] {
-        // iCloud.jp.p4n.ShiibaVisionOsVisualizer コンテナの Documents/Shimonju/ を参照
-        // Mac パス: ~/Library/Mobile Documents/iCloud~jp~p4n~ShiibaVisionOsVisualizer/Documents/Shimonju/
-        let containerID = "iCloud.jp.p4n.ShiibaVisionOsVisualizer"
-        if let base = FileManager.default.url(
-            forUbiquityContainerIdentifier: containerID
-        )?.appendingPathComponent("Documents/Shimonju") {
+        if let base = ICloudContainer.shimojuURL {
             let urls = (try? FileManager.default.contentsOfDirectory(
                 at: base,
                 includingPropertiesForKeys: nil,
@@ -302,25 +302,37 @@ actor Renderer {
     }
 
     /// スキャン → アニメーション or 静的ロードを実行
+    /// PLY URL のスキャン結果はキャッシュされ、モード切り替え時の再スキャンを防ぐ。
     private func scanAndStartAnimation() async {
-        let urls = scanICloudPLYFiles()
+        let urls: [URL]
+        if let cached = cachedPLYURLs {
+            urls = cached
+        } else {
+            urls = scanICloudPLYFiles()
+            cachedPLYURLs = urls
+        }
+
+        // 音声ファイルを準備（まだ再生しない）
+        if let audioURL = scanAudioFile() {
+            prepareAudio(url: audioURL)
+        }
+        let player = self.audioPlayer  // actor内でキャプチャ
+
         if urls.count > 1 {
-            pointCloudRenderer.startAnimation(frameURLs: urls)
+            pointCloudRenderer.startAnimation(frameURLs: urls, audioTime: {
+                return player?.currentTime().seconds
+            }, startPlayback: {
+                player?.play()
+            })
         } else if let url = urls.first {
             // シングルフレーム（シミュレーター等）: 従来方式
             await pointCloudRenderer.loadSingleFrame(url: url)
-        }
-        // 音声ファイルを検索して再生
-        if let audioURL = scanAudioFile() {
-            startAudio(url: audioURL)
         }
     }
 
     /// iCloud フォルダから音声ファイルを1つ取得
     private nonisolated func scanAudioFile() -> URL? {
-        guard let containerURL = FileManager.default
-            .url(forUbiquityContainerIdentifier: "iCloud.jp.p4n.ShiibaVisionOsVisualizer")?
-            .appendingPathComponent("Documents/Shimonju") else { return nil }
+        guard let containerURL = ICloudContainer.shimojuURL else { return nil }
         let extensions = ["mp3", "wav", "m4a", "aac"]
         let files = (try? FileManager.default.contentsOfDirectory(
             at: containerURL,
@@ -329,10 +341,10 @@ actor Renderer {
         return files.first { extensions.contains($0.pathExtension.lowercased()) }
     }
 
-    private func startAudio(url: URL) {
+    private func prepareAudio(url: URL) {
         audioPlayer = AVPlayer(url: url)
-        audioPlayer?.play()
-        print("[Renderer] 🎵 Audio started: \(url.lastPathComponent)")
+        // play()はstartPlaybackコールバック内で呼ぶ（最初のPLYフレームロード完了後）
+        print("[Renderer] 🎵 Audio prepared: \(url.lastPathComponent)")
     }
 
     private func stopAudio() {
@@ -591,9 +603,6 @@ actor Renderer {
             )
         } else {
             // Render point cloud
-            if Int.random(in: 0..<240) == 0 {
-                print("[Renderer] ☁️ Rendering PointCloud (model matrix: \(pointCloudRenderer.modelMatrix))")
-            }
             pointCloudRenderer.encode(
                 commandBuffer: commandBuffer,
                 renderPassDescriptor: renderPassDescriptor,

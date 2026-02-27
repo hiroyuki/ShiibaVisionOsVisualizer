@@ -34,6 +34,7 @@ final class PointCloudRenderer {
 
     private var pointCloudData: PointCloudData?
     private var isConverted = false  // compute shader has run once
+    private var framesConsumed = 0  // encode()でpendingFrameを取り込んだ回数
     
     /// Check if point cloud data has been loaded
     var isDataLoaded: Bool {
@@ -45,6 +46,8 @@ final class PointCloudRenderer {
     private var animationTask: Task<Void, Never>?
     private let pendingLock = NSLock()
     private var _pendingFrame: PointCloudData? = nil
+    private var onFirstFrameRendered: (() -> Void)?
+    private var _audioPlaybackStarted = false  // encode()からアニメーションループへの通知
 
     // MARK: - Placement
 
@@ -54,10 +57,8 @@ final class PointCloudRenderer {
 
     // MARK: - Init
 
-    init(device: MTLDevice, layerRenderer: LayerRenderer) throws {
+    init(device: MTLDevice, library: MTLLibrary, layerRenderer: LayerRenderer) throws {
         self.device = device
-
-        let library = device.makeDefaultLibrary()!
 
         // Compute pipeline
         let computeFunction = library.makeFunction(name: "pointCloudConvert")!
@@ -113,19 +114,45 @@ final class PointCloudRenderer {
     }
 
     /// 連番PLYアニメーション開始（ループ再生）
-    func startAnimation(frameURLs: [URL]) {
+    /// - Parameters:
+    ///   - frameURLs: PLYフレームファイルのURL配列
+    ///   - audioTime: オーディオの現在再生位置(秒)を返すクロージャ。nilなら同期ログを出さない
+    ///   - startPlayback: 最初のフレームロード完了時に呼ばれるコールバック（オーディオ再生開始用）
+    func startAnimation(frameURLs: [URL], audioTime: (@Sendable () -> Double?)? = nil, startPlayback: (() -> Void)? = nil) {
         stopAnimation()
         guard !frameURLs.isEmpty else { return }
+        // render loopのencode()が最初のフレームを消費した時に呼ぶ
+        self.onFirstFrameRendered = startPlayback
 
         animationTask = Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             let clock = ContinuousClock()
-            let frameDuration = Duration.milliseconds(33)  // 30fps
+            // 30fps = 33.333...ms/frame
+            let frameDurationNs: Int64 = 33_333_333
             let loader = PLYLoader()
-            var frameIndex = 0
+
+            // === Phase 1: オーディオ開始前 — frame 0をロードして待機 ===
+            do {
+                let url = frameURLs[0]
+                let data = try await loader.load(url: url, device: self.device)
+                self.pendingLock.withLock { self._pendingFrame = data }
+            } catch {
+                    print("[PCR] Frame 0 load failed: \(error)")
+            }
+
+            // encode()がframe 0を消費してplay()を呼ぶまで待機
+            while !Task.isCancelled {
+                let started = self.pendingLock.withLock { self._audioPlaybackStarted }
+                if started { break }
+                try? await Task.sleep(for: .milliseconds(5), clock: clock)
+            }
+            guard !Task.isCancelled else { return }
+
+            // === Phase 2: オーディオ開始 — 絶対タイムラインで再生 ===
+            let animationStart = clock.now  // オーディオと同時にタイムライン開始
+            var frameIndex = 1  // frame 0は既にPhase 1でロード済み
 
             while !Task.isCancelled {
-                let deadline = clock.now + frameDuration
                 let url = frameURLs[frameIndex % frameURLs.count]
 
                 do {
@@ -137,10 +164,22 @@ final class PointCloudRenderer {
                     }
                 }
 
-                frameIndex += 1
-                if clock.now < deadline {
-                    try? await Task.sleep(until: deadline, clock: clock)
+                // 絶対タイムライン: deadline = オーディオ開始時刻 + frameIndex * frameDuration
+                let nextDeadline = animationStart + Duration.nanoseconds(frameDurationNs * Int64(frameIndex))
+                if clock.now < nextDeadline {
+                    try? await Task.sleep(until: nextDeadline, clock: clock)
                 }
+
+                // 同期ログ（30フレームごと ≒ 約1秒間隔）
+                if let audioTime, frameIndex % 30 == 0 {
+                    let plyTime = Double(frameIndex) / 30.0
+                    let audioSec = audioTime() ?? -1
+                    let drift = plyTime - audioSec
+                    let driftStr = String(format: "%+.3f", drift)
+                    print("[Sync] frame=\(frameIndex) ply=\(String(format:"%.3f",plyTime))s audio=\(String(format:"%.3f",audioSec))s drift=\(driftStr)s")
+                }
+
+                frameIndex += 1
             }
         }
         print("[PCR] Animation started: \(frameURLs.count) frames")
@@ -150,7 +189,11 @@ final class PointCloudRenderer {
     func stopAnimation() {
         animationTask?.cancel()
         animationTask = nil
-        pendingLock.withLock { _pendingFrame = nil }
+        pendingLock.withLock {
+            _pendingFrame = nil
+            _audioPlaybackStarted = false
+        }
+        framesConsumed = 0
     }
 
     /// 単一フレームをURLからロード（シミュレーター用フォールバック）
@@ -186,7 +229,15 @@ final class PointCloudRenderer {
             defer { _pendingFrame = nil }
             return _pendingFrame
         }
-        if let next { pointCloudData = next; isConverted = false }
+        if let next {
+            pointCloudData = next; isConverted = false
+            if framesConsumed == 0 {
+                onFirstFrameRendered?()
+                onFirstFrameRendered = nil
+                pendingLock.withLock { _audioPlaybackStarted = true }
+            }
+            framesConsumed += 1
+        }
 
         guard let data = pointCloudData else { return }
 
