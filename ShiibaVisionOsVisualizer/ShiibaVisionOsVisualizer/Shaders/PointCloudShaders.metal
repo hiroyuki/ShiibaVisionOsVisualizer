@@ -108,7 +108,7 @@ vertex PointFragIn pointCloudVertex(
                              viewProjection.viewProjectionMatrix[amp_id][1][1],
                              viewProjection.viewProjectionMatrix[amp_id][2][1]);
 
-    float  physicalSize = 0.005; // 0.5cm half-extent = 1cm diameter
+    float  physicalSize = 0.0025; // 0.25cm half-extent = 0.5cm diameter
     float3 worldOffset  = (camRight * uv.x + camUp * uv.y) * physicalSize;
     float4 clipPos      = viewProjection.viewProjectionMatrix[amp_id]
                           * (worldPos + float4(worldOffset, 0.0));
@@ -122,20 +122,13 @@ vertex PointFragIn pointCloudVertex(
 
 // MARK: - Fragment Shader
 
-/// Renders each point as a soft circle (circular clipping + edge fade).
+/// Renders each point as an opaque circle (circular clipping, no alpha fade).
 fragment float4 pointCloudFragment(
     PointFragIn in [[ stage_in ]]
 ) {
-    // uv is [-1, 1] passed from vertex shader
     float dist = length(in.uv);
-
-    // Discard pixels outside the circle
     if (dist > 1.0) {
         discard_fragment();
     }
-
-    // Soft edge fade
-    float alpha = 1.0 - smoothstep(0.7, 1.0, dist);
-
-    return float4(in.color, alpha);
+    return float4(in.color, 1.0);
 }

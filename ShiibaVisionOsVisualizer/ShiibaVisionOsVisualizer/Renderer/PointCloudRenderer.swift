@@ -75,17 +75,10 @@ final class PointCloudRenderer {
         renderDescriptor.rasterSampleCount        = device.rasterSampleCount
         renderDescriptor.maxVertexAmplificationCount = layerRenderer.properties.viewCount
 
-        // Enable alpha blending for soft circle edges
+        // Opaque circles — no alpha blending needed
         let colorAttachment = renderDescriptor.colorAttachments[0]!
         colorAttachment.pixelFormat              = layerRenderer.configuration.colorFormat
-        print("[PointCloudRenderer] colorFormat = \(layerRenderer.configuration.colorFormat.rawValue)")
-        colorAttachment.isBlendingEnabled        = true
-        colorAttachment.rgbBlendOperation        = .add
-        colorAttachment.alphaBlendOperation      = .add
-        colorAttachment.sourceRGBBlendFactor     = .sourceAlpha
-        colorAttachment.destinationRGBBlendFactor = .oneMinusSourceAlpha
-        colorAttachment.sourceAlphaBlendFactor   = .sourceAlpha
-        colorAttachment.destinationAlphaBlendFactor = .oneMinusSourceAlpha
+        colorAttachment.isBlendingEnabled        = false
 
         renderDescriptor.depthAttachmentPixelFormat = layerRenderer.configuration.depthFormat
 
