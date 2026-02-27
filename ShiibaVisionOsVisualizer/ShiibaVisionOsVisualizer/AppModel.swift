@@ -9,6 +9,13 @@ import SwiftUI
 import ARKit
 import os
 
+/// Cached iCloud container URLs (computed once on first access via dispatch_once)
+enum ICloudContainer {
+    static let containerID = "iCloud.jp.p4n.ShiibaVisionOsVisualizer"
+    static let baseURL: URL? = FileManager.default.url(forUbiquityContainerIdentifier: containerID)
+    static let shimojuURL: URL? = baseURL?.appendingPathComponent("Documents/Shimonju")
+}
+
 /// Maintains app-wide state
 @MainActor
 @Observable

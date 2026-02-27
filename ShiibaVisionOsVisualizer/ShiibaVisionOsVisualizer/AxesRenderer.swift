@@ -33,10 +33,8 @@ final class AxesRenderer {
     
     // MARK: - Init
     
-    init(device: MTLDevice, layerRenderer: LayerRenderer) throws {
+    init(device: MTLDevice, library: MTLLibrary, layerRenderer: LayerRenderer) throws {
         self.device = device
-        
-        let library = device.makeDefaultLibrary()!
         
         // Render pipeline
         let vertexFunction = library.makeFunction(name: "axesVertex")!

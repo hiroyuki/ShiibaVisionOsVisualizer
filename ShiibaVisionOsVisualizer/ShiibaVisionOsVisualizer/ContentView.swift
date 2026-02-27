@@ -196,8 +196,10 @@ struct ContentView: View {
         }
         .padding()
         .onAppear {
-            checkiCloudFiles()
-            prefetchAllFiles()
+            Task.detached(priority: .utility) {
+                checkiCloudFiles()
+                prefetchAllFiles()
+            }
         }
         .onChange(of: appModel.immersiveSpaceState) { _, newState in
             // Dismiss window when starting point cloud display (not in axes placement mode)
@@ -209,10 +211,7 @@ struct ContentView: View {
 }
 
 private func prefetchAllFiles() {
-    let containerID = "iCloud.jp.p4n.ShiibaVisionOsVisualizer"
-    guard let iCloudBase = FileManager.default.url(
-        forUbiquityContainerIdentifier: containerID
-    )?.appendingPathComponent("Documents/Shimonju") else {
+    guard let iCloudBase = ICloudContainer.shimojuURL else {
         print("[iCloud prefetch] ❌ container not found")
         return
     }
@@ -237,11 +236,8 @@ private func prefetchAllFiles() {
 }
 
 private func checkiCloudFiles() {
-    let containerID = "iCloud.jp.p4n.ShiibaVisionOsVisualizer"
-    guard let iCloudURL = FileManager.default.url(
-        forUbiquityContainerIdentifier: containerID
-    )?.appendingPathComponent("Documents/Shimonju") else {
-        print("[iCloud] ❌ container not found: \(containerID)")
+    guard let iCloudURL = ICloudContainer.shimojuURL else {
+        print("[iCloud] ❌ container not found: \(ICloudContainer.containerID)")
         return
     }
     print("[iCloud] container URL: \(iCloudURL.path)")

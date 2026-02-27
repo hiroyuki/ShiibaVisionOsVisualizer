@@ -46,16 +46,11 @@ actor PLYLoader {
 
     /// Loads a PLY file from an arbitrary URL.
     func load(url: URL, device: MTLDevice) async throws -> PointCloudData {
-        let clock = ContinuousClock()
-        let t0 = clock.now
-
         // ① ディスク読み込み
         let data = try Data(contentsOf: url, options: .mappedIfSafe)
-        let t1 = clock.now
 
         // ② ヘッダパース（頂点数・フォーマット確認のみ）
         let (pointCount, binaryStart) = try parsePLYHeader(data: data)
-        let t2 = clock.now
 
         // ③ MTLBuffer 確保 + ディスクデータを直接コピー（中間配列なし）
         guard let pointCloudData = PointCloudData(
@@ -66,25 +61,8 @@ actor PLYLoader {
         ) else {
             throw PLYLoaderError.invalidHeader
         }
-        let t3 = clock.now
-
-        let fileSize = Double(data.count) / 1024 / 1024
-        print("""
-        [PLYLoader] \(url.lastPathComponent) (\(String(format: "%.2f", fileSize)) MB, \(pointCount) points)
-          ① disk read : \(formatMS(t0, t1))
-          ② parse     : \(formatMS(t1, t2))
-          ③ MTLBuffer : \(formatMS(t2, t3))
-          ─────────────────────────
-          total       : \(formatMS(t0, t3))  [budget: 33.3ms @ 30fps]
-        """)
 
         return pointCloudData
-    }
-
-    private func formatMS(_ start: ContinuousClock.Instant, _ end: ContinuousClock.Instant) -> String {
-        let ms = Double(start.duration(to: end).components.attoseconds) / 1e15
-        let budget33ms = ms > 33.3 ? " ⚠️ over budget" : ""
-        return String(format: "%.2f ms%@", ms, budget33ms)
     }
 
     // MARK: - Private
