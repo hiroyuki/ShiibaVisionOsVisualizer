@@ -13,21 +13,11 @@
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationPreferredDefaultSceneSessionRole</key>
-		<string>CPSceneSessionRoleImmersiveSpaceApplication</string>
+		<string>UIWindowSceneSessionRoleApplication</string>
 		<key>UIApplicationSupportsMultipleScenes</key>
 		<true/>
 		<key>UISceneConfigurations</key>
-		<dict>
-			<key>CPSceneSessionRoleImmersiveSpaceApplication</key>
-			<array>
-				<dict>
-					<key>UISceneConfigurationName</key>
-					<string>ImmersiveSpace</string>
-					<key>UISceneInitialImmersionStyle</key>
-					<string>UIImmersionStyleMixed</string>
-				</dict>
-			</array>
-		</dict>
+		<dict/>
 	</dict>
 </dict>
 </plist>

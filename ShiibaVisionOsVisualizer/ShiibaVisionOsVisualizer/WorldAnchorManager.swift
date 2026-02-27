@@ -67,9 +67,23 @@ class WorldAnchorManager {
         }
     }
 
-    /// ARKit から全アンカーを削除する（provider が running の状態で呼ぶこと）
+    /// ARKit から全アンカーを削除する。プロバイダーが running になるまで最大3秒待つ。
     func removeAllAnchors() async {
         print("[WorldAnchorManager] 🗑️ Removing all existing WorldAnchors...")
+
+        // Wait for provider to be running (up to 3 seconds)
+        var retryCount = 0
+        while worldTracking.state != .running && retryCount < 15 {
+            print("[WorldAnchorManager] ⏳ Waiting for WorldTracking provider... (\(retryCount + 1)/15)")
+            try? await Task.sleep(for: .milliseconds(200))
+            retryCount += 1
+        }
+
+        guard worldTracking.state == .running else {
+            print("[WorldAnchorManager] ⚠️ WorldTracking not running after wait, skipping removeAllAnchors")
+            return
+        }
+
         do {
             try await worldTracking.removeAllAnchors()
             print("[WorldAnchorManager] ✅ removeAllAnchors() succeeded")

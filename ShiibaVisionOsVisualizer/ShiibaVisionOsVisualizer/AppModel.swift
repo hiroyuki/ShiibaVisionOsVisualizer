@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import UIKit
 import ARKit
 import os
 
@@ -77,7 +78,18 @@ class AppModel {
     
     // Preview offset from device (default: 1.0m forward, at eye level)
     var previewOffsetFromDevice: SIMD3<Float> = SIMD3<Float>(0, 0, -1.0)
-    
+
+    /// アンカー未設定時にWindowを開く
+    func requestWindowIfNeeded() {
+        guard worldAnchorID == nil && !isRunningOnSimulator else { return }
+        print("[AppModel] No world anchor — requesting Window for placement")
+        UIApplication.shared.requestSceneSessionActivation(
+            nil, userActivity: nil, options: nil, errorHandler: { error in
+                print("[AppModel] ❌ Failed to open window: \(error)")
+            }
+        )
+    }
+
     init() {
         worldAnchorManager = WorldAnchorManager(worldTracking: worldTracking)
         worldAnchorManager.loadSavedAnchorID()
@@ -199,6 +211,23 @@ class AppModel {
             try await arSession.run([worldTracking, planeDetection])
             isARSessionRunning = true
             print("[AppModel] ARKit session started with world tracking and plane detection")
+            print("[AppModel] WorldTracking state: \(worldTracking.state)")
+            print("[AppModel] PlaneDetection state: \(planeDetection.state)")
+
+            // Monitor provider state changes
+            Task {
+                for await event in arSession.events {
+                    switch event {
+                    case .dataProviderStateChanged(let providers, let newState, let error):
+                        let names = providers.map { String(describing: type(of: $0)) }
+                        print("[ARKit] Provider state changed: \(names) → \(newState), error: \(String(describing: error))")
+                    case .authorizationChanged(let type, let status):
+                        print("[ARKit] Auth changed: \(type) → \(status)")
+                    @unknown default:
+                        print("[ARKit] Unknown event")
+                    }
+                }
+            }
         } catch {
             print("[AppModel] Failed to start ARKit session: \(error)")
         }

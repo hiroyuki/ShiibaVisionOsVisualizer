@@ -57,6 +57,7 @@ final class RendererTaskExecutor: TaskExecutor {
 struct SharedRenderState: Sendable {
     var displayMode: AppModel.DisplayMode = .pointCloud
     var anchorTransform: matrix_float4x4? = nil
+    var floorY: Float? = nil
 }
 
 nonisolated let sharedRenderState = OSAllocatedUnfairLock(initialState: SharedRenderState())
@@ -212,7 +213,12 @@ actor Renderer {
         
         // ARKit session is already running in AppModel, just start monitoring
         print("[Renderer] Using shared ARKit session from AppModel")
-        
+
+        let wt = await appModel.worldTracking
+        let pd = await appModel.planeDetection
+        print("[Renderer] WorldTracking state: \(wt.state)")
+        print("[Renderer] PlaneDetection state: \(pd.state)")
+
         // Start floor detection monitoring
         Task {
             await startFloorDetection()
@@ -229,32 +235,37 @@ actor Renderer {
     private let floorDetectionInterval: TimeInterval = 0.5  // Check every 0.5 seconds
     
     // Start monitoring floor planes in background
+    // NOTE: Task.detached is required to avoid RendererTaskExecutor starvation.
+    // The render loop (90fps while-true) monopolizes RendererTaskExecutor,
+    // preventing inherited Tasks from resuming after await suspension points.
     private func startFloorDetection() async {
         let planeDetection = await appModel.planeDetection
-        
+        let appModel = self.appModel
+
         print("[Renderer] Starting floor detection monitoring...")
-        
-        Task {
+
+        Task.detached {
             for await update in planeDetection.anchorUpdates {
                 guard let planeAnchor = update.anchor as? PlaneAnchor else { continue }
-                
+
                 // Only consider horizontal planes (floor candidates)
                 if planeAnchor.alignment == .horizontal {
                     let planeTransform = planeAnchor.originFromAnchorTransform
                     let planeY = planeTransform.columns.3.y
-                    
+
                     print("[Renderer] Horizontal plane detected at Y: \(planeY)")
-                    
+
                     // Update floor Y if this is lower or first detection
                     await MainActor.run {
                         if appModel.detectedFloorY == nil || planeY < appModel.detectedFloorY! {
                             appModel.updateDetectedFloor(planeY)
                         }
-                    }
-                    
-                    // Update cached floor Y for rendering
-                    if cachedFloorY == nil || planeY < cachedFloorY! {
-                        cachedFloorY = planeY
+                        // Lock-based update (no actor scheduling needed)
+                        sharedRenderState.withLock { state in
+                            if state.floorY == nil || planeY < state.floorY! {
+                                state.floorY = planeY
+                            }
+                        }
                     }
                 }
             }
@@ -724,7 +735,7 @@ actor Renderer {
                 // Position: directly below device (same X, Z, but on floor)
                 let previewPos = SIMD3<Float>(
                     devicePosition.x,
-                    cachedFloorY ?? (devicePosition.y - 1.5),  // Floor or 1.5m below device
+                    sharedRenderState.withLock({ $0.floorY }) ?? (devicePosition.y - 1.5),  // Floor or 1.5m below device
                     devicePosition.z
                 )
                 
@@ -744,6 +755,12 @@ actor Renderer {
                 }
                 
                 return (true, matrix)
+            } else {
+                // deviceAnchorがまだ利用不可能 - 描画しない
+                if Int.random(in: 0..<60) == 0 {
+                    print("[Renderer] ⏳ Axes placement: waiting for device anchor")
+                }
+                return (false, matrix_identity_float4x4)
             }
         } else {
             // Point cloud mode - use anchor transform from sharedRenderState
@@ -763,8 +780,6 @@ actor Renderer {
         return (true, matrix4x4_translation(0, 0, -1.0))
     }
     
-    // Cache for floor Y coordinate (updated from floor detection)
-    private var cachedFloorY: Float?
 
     func renderFrame() {
         guard let frame = layerRenderer.queryNextFrame() else { return }
@@ -827,7 +842,12 @@ actor Renderer {
         // Read display mode from shared state (synchronous, no MainActor hop)
         let newMode = sharedRenderState.withLock { $0.displayMode }
         self.updateDisplayMode(newMode)
-        
+
+        // Diagnostic: confirm axes mode is active and device anchor state
+        if currentDisplayMode == .axesPlacement && Int.random(in: 0..<60) == 0 {
+            print("[Renderer] 🔍 Axes mode active, deviceAnchor: \(deviceAnchor != nil ? "available" : "nil")")
+        }
+
         // Synchronously update matrices before rendering
         let (shouldRender, matrixToUse) = self.updateRenderState(deviceAnchor: deviceAnchor)
         
@@ -925,6 +945,19 @@ actor Renderer {
                 viewports: viewports,
                 viewCount: drawable.views.count
             )
+            // World origin axes (identity matrix)
+            let savedModelMatrix = uniforms[0].modelMatrix
+            uniforms[0].modelMatrix = matrix_identity_float4x4
+            axesRenderer.renderInto(
+                encoder: encoder,
+                uniformsBuffer: dynamicUniformBuffer,
+                uniformsOffset: uniformBufferOffset,
+                viewProjectionBuffer: drawableTarget.viewProjectionBuffer,
+                viewProjectionOffset: drawableTarget.viewProjectionBufferOffset,
+                viewports: viewports,
+                viewCount: drawable.views.count
+            )
+            uniforms[0].modelMatrix = savedModelMatrix
         } else if let data = pointCloudRenderer.currentData {
             pointCloudRenderer.renderInto(
                 encoder: encoder,

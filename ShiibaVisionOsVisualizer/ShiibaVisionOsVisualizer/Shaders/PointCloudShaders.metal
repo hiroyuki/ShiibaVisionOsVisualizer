@@ -60,7 +60,7 @@ vertex OverlayOut overlayVertex(uint vertexID [[ vertex_id ]]) {
 }
 
 fragment float4 overlayFragment() {
-    return float4(0.0, 0.0, 0.0, 0.8);
+    return float4(0.0, 0.0, 0.0, 0.2);
 }
 
 // MARK: - Compute Shader
@@ -130,7 +130,7 @@ vertex PointFragIn pointCloudVertex(
                              viewProjection.viewProjectionMatrix[amp_id][1][1],
                              viewProjection.viewProjectionMatrix[amp_id][2][1]);
 
-    float  physicalSize = 0.0025; // 0.25cm half-extent = 0.5cm diameter
+    float  physicalSize = 0.001; // 0.25cm half-extent = 0.5cm diameter
     float3 worldOffset  = (camRight * uv.x + camUp * uv.y) * physicalSize;
     float4 clipPos      = viewProjection.viewProjectionMatrix[amp_id]
                           * (worldPos + float4(worldOffset, 0.0));

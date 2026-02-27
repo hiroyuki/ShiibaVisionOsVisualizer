@@ -23,17 +23,14 @@ struct ContentView: View {
 
             Text("Hello, world!")
 
-            // Start button - Display point cloud at saved anchor
+            // Start button - Open ImmersiveSpace and show point cloud
             Button {
                 Task {
-                    if appModel.immersiveSpaceState == .open {
-                        // Already open, just ensure we're in point cloud mode
-                        appModel.enterPointCloudMode()
-                    } else {
-                        // Open immersive space and show point cloud
-                        appModel.enterPointCloudMode()
+                    appModel.enterPointCloudMode()
+                    if appModel.immersiveSpaceState != .open {
                         await openImmersiveSpace(id: appModel.immersiveSpaceID)
                     }
+                    dismissWindow()
                 }
             } label: {
                 Label("Start", systemImage: "play.fill")
@@ -142,9 +139,8 @@ struct ContentView: View {
                         Button {
                             Task {
                                 await appModel.confirmPlacementAtCurrentPosition()
-                                // Close immersive space and return to window
                                 await dismissImmersiveSpace()
-                                print("[ContentView] ✅ Returned to window - Start button is now enabled")
+                                print("[ContentView] ✅ Anchor placed — returned to window")
                             }
                         } label: {
                             Label("ここに決定", systemImage: "checkmark.circle.fill")
@@ -160,19 +156,11 @@ struct ContentView: View {
                 
                 Button {
                     Task {
-                        if appModel.immersiveSpaceState == .open {
-                            // Already in immersive space
-                            if appModel.displayMode == .axesPlacement {
-                                // Already in placement mode - do nothing (use "ここに決定" button above)
-                                return
-                            } else {
-                                // Enter axes placement mode
-                                await appModel.enterAxesPlacementMode()
+                        if appModel.displayMode != .axesPlacement {
+                            if appModel.immersiveSpaceState != .open {
+                                await openImmersiveSpace(id: appModel.immersiveSpaceID)
                             }
-                        } else {
-                            // Open immersive space in placement mode
                             await appModel.enterAxesPlacementMode()
-                            await openImmersiveSpace(id: appModel.immersiveSpaceID)
                         }
                     }
                 } label: {
@@ -201,8 +189,7 @@ struct ContentView: View {
                 prefetchAllFiles()
             }
         }
-.onChange(of: appModel.immersiveSpaceState) { _, newState in
-            // Dismiss window when starting point cloud display (not in axes placement mode)
+        .onChange(of: appModel.immersiveSpaceState) { _, newState in
             if newState == .open && appModel.displayMode == .pointCloud {
                 dismissWindow()
             }
