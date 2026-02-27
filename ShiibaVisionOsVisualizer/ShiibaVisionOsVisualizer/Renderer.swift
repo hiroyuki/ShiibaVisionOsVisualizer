@@ -115,6 +115,7 @@ actor Renderer {
     private enum OSCCommand: Sendable {
         case play, pause, resume, stop, rewind
         case seek(Int)
+        case removeAnchor
     }
     private nonisolated let oscCommandQueue = OSAllocatedUnfairLock(initialState: [OSCCommand]())
 
@@ -316,22 +317,29 @@ actor Renderer {
         // The actual matrix updates happen in render() based on current mode
     }
     
-    /// iCloud Drive の ShiibaAVP/Shimonju/ から PLY ファイルURLを昇順で返す。
+    /// iCloud Drive の ShiibaAVP/ShimonjuWoMotion/ から PLY ファイルURLを昇順で返す。
     /// iCloudが使えない場合は Bundle.main にフォールバック。
     /// 結果はキャッシュされ、2回目以降はディレクトリスキャンをスキップする。
     private nonisolated func scanICloudPLYFiles() -> [URL] {
         if let base = ICloudContainer.shimojuURL {
-            let urls = (try? FileManager.default.contentsOfDirectory(
-                at: base,
-                includingPropertiesForKeys: nil,
-                options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
-            ))?.filter { $0.pathExtension.lowercased() == "ply" }
-              .sorted { $0.lastPathComponent < $1.lastPathComponent } ?? []
-            if !urls.isEmpty {
-                print("[Renderer] iCloud PLY: \(urls.count) files in Documents/Shimonju")
-                return urls
+            // ディレクトリ存在チェック（iCloud同期待ちブロックを回避）
+            var isDir: ObjCBool = false
+            if !FileManager.default.fileExists(atPath: base.path, isDirectory: &isDir) || !isDir.boolValue {
+                print("[Renderer] iCloud directory does not exist: Documents/ShimonjuWoMotion")
+                // fall through to bundle fallback below
+            } else {
+                let urls = (try? FileManager.default.contentsOfDirectory(
+                    at: base,
+                    includingPropertiesForKeys: nil,
+                    options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
+                ))?.filter { $0.pathExtension.lowercased() == "ply" }
+                  .sorted { $0.lastPathComponent < $1.lastPathComponent } ?? []
+                if !urls.isEmpty {
+                    print("[Renderer] iCloud PLY: \(urls.count) files in Documents/ShimonjuWoMotion")
+                    return urls
+                }
+                print("[Renderer] iCloud directory empty: Documents/ShimonjuWoMotion")
             }
-            print("[Renderer] iCloud directory empty or not found: Documents/Shimonju")
         } else {
             print("[Renderer] iCloud container not available (entitlement missing?)")
         }
@@ -346,7 +354,22 @@ actor Renderer {
 
     /// スキャン → アニメーション or 静的ロードを実行
     /// PLY URL のスキャン結果はキャッシュされ、モード切り替え時の再スキャンを防ぐ。
+    /// iCloud ダウンロード完了まで待機する。
     private func scanAndStartAnimation() async {
+        // iCloud ダウンロード完了を待機
+        if !isRunningOnSimulator {
+            while !ICloudContainer.downloadReady.withLock({ $0 }) {
+                let progress = ICloudContainer.downloadProgress.withLock { $0 }
+                if progress.total > 0 {
+                    print("[Renderer] ⏳ downloading — \(progress.ready) / \(progress.total)")
+                } else {
+                    print("[Renderer] ⏳ downloading — checking status...")
+                }
+                try? await Task.sleep(for: .seconds(5))
+            }
+            print("[Renderer] ✅ iCloud download complete, starting scan")
+        }
+
         let urls: [URL]
         if let cached = cachedPLYURLs {
             urls = cached
@@ -468,7 +491,8 @@ actor Renderer {
             case "/pause":   command = .pause
             case "/resume":  command = .resume
             case "/stop":    command = .stop
-            case "/rewind":  command = .rewind
+            case "/rewind":        command = .rewind
+            case "/removeAnchor":  command = .removeAnchor
             case "/seek":
                 if case .int32(let frame) = message.arguments.first {
                     command = .seek(Int(frame))
@@ -501,6 +525,7 @@ actor Renderer {
             case .stop:    oscStop()
             case .rewind:  oscRewind()
             case .seek(let frame): oscSeek(to: frame)
+            case .removeAnchor:    oscRemoveAnchor()
             }
         }
     }
@@ -578,6 +603,16 @@ actor Renderer {
 
     private func oscRewind() {
         oscSeek(to: 0)
+    }
+
+    private func oscRemoveAnchor() {
+        let osc = oscManager
+        Task { @MainActor in
+            await appModel.worldAnchorManager.removeAllAnchors()
+            appModel.worldAnchorManager.clearAnchor()
+            osc?.send(OSCMessage(address: "/anchorRemoved"))
+            print("[OSC] Anchor removed")
+        }
     }
 
     private func seekAudio(to frameIndex: Int) {
@@ -715,11 +750,6 @@ actor Renderer {
             // WorldAnchorManager writes originFromAnchorTransform (with rotation) here
             let anchorTransform = sharedRenderState.withLock { $0.anchorTransform }
             if let matrix = anchorTransform {
-                if Int.random(in: 0..<240) == 0 {
-                    let pos = SIMD3<Float>(matrix.columns.3.x, matrix.columns.3.y, matrix.columns.3.z)
-                    print("[Renderer] ☁️ PointCloud at: \(pos)")
-                }
-                
                 return (true, matrix)
             } else {
                 if Int.random(in: 0..<240) == 0 {

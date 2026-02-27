@@ -83,7 +83,7 @@ actor PLYLoader {
         try validateFormat(header: headerString)
 
         let binaryStart = headerRange.upperBound
-        let bytesPerPoint = 27
+        let bytesPerPoint = 15
         let expectedBytes = vertexCount * bytesPerPoint
         let actualBytes = data.count - binaryStart
 

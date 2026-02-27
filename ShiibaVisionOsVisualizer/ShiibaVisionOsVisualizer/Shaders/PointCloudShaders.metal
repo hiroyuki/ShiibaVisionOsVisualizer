@@ -13,16 +13,15 @@ using namespace metal;
 
 // MARK: - Data Structures
 
-/// Input point in Unity's packed binary format (27 bytes, no padding)
+/// Input point in Unity's packed binary format (15 bytes, no padding)
 /// NOTE: uchar3 は Metal で 4バイトアライメントされるため使用不可。
-///       r, g, b を個別の uchar として定義することで packed 27バイトを正確に読む。
+///       r, g, b を個別の uchar として定義することで packed 15バイトを正確に読む。
 struct UnityPointData {
     packed_float3 position;  // 12 bytes: x, y, z
     uchar         r;         //  1 byte
     uchar         g;         //  1 byte
     uchar         b;         //  1 byte
-    packed_float3 velocity;  // 12 bytes: vx, vy, vz
-} __attribute__((packed));   // total: 27 bytes
+} __attribute__((packed));   // total: 15 bytes
 
 /// Output point in VisionOS format, written by compute shader, read by vertex shader
 /// NOTE: float3 は GPU 上で 16 バイトアライメントされるため、
@@ -69,7 +68,6 @@ fragment float4 overlayFragment() {
 /// Converts point cloud data from Unity format to VisionOS format.
 /// - Coordinate system: Unity left-handed (-x, y, z) → VisionOS right-handed
 /// - Color: uchar 0-255 → float 0.0-1.0
-/// - Velocity: same coordinate conversion as position (reserved for future use)
 kernel void pointCloudConvert(
     device const UnityPointData* inputPoints  [[ buffer(BufferIndexPointCloudInput)  ]],
     device       PointVertex*    outputPoints [[ buffer(BufferIndexPointCloudOutput) ]],

@@ -216,7 +216,15 @@ private func prefetchAllFiles() {
         return
     }
 
-    guard let files = try? FileManager.default.contentsOfDirectory(
+    // ディレクトリ存在チェック（iCloud同期待ちブロックを回避）
+    let fm = FileManager.default
+    var isDir: ObjCBool = false
+    guard fm.fileExists(atPath: iCloudBase.path, isDirectory: &isDir), isDir.boolValue else {
+        print("[iCloud prefetch] ❌ directory does not exist: \(iCloudBase.path)")
+        return
+    }
+
+    guard let files = try? fm.contentsOfDirectory(
         at: iCloudBase,
         includingPropertiesForKeys: [.ubiquitousItemDownloadingStatusKey]
     ) else {
@@ -228,7 +236,7 @@ private func prefetchAllFiles() {
     for file in files {
         let status = try? file.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey])
         if status?.ubiquitousItemDownloadingStatus != .current {
-            try? FileManager.default.startDownloadingUbiquitousItem(at: file)
+            try? fm.startDownloadingUbiquitousItem(at: file)
             requested += 1
         }
     }
@@ -241,6 +249,14 @@ private func checkiCloudFiles() {
         return
     }
     print("[iCloud] container URL: \(iCloudURL.path)")
+
+    // ディレクトリ存在チェック（iCloud同期待ちブロックを回避）
+    var isDir: ObjCBool = false
+    guard FileManager.default.fileExists(atPath: iCloudURL.path, isDirectory: &isDir), isDir.boolValue else {
+        print("[iCloud] ❌ directory does not exist: \(iCloudURL.path)")
+        return
+    }
+
     do {
         let files = try FileManager.default.contentsOfDirectory(atPath: iCloudURL.path)
         print("[iCloud] ✅ files count: \(files.count)")

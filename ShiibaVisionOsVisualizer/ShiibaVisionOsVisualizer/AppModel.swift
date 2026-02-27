@@ -13,7 +13,11 @@ import os
 enum ICloudContainer {
     static let containerID = "iCloud.jp.p4n.ShiibaVisionOsVisualizer"
     static let baseURL: URL? = FileManager.default.url(forUbiquityContainerIdentifier: containerID)
-    static let shimojuURL: URL? = baseURL?.appendingPathComponent("Documents/Shimonju")
+    static let shimojuURL: URL? = baseURL?.appendingPathComponent("Documents/ShimonjuWoMotion")
+    /// iCloud PLY ファイルのダウンロード完了フラグ（スレッドセーフ）
+    static let downloadReady = OSAllocatedUnfairLock(initialState: false)
+    /// ダウンロード進捗 (ready, total) — prefetch が更新、renderer が参照
+    static let downloadProgress = OSAllocatedUnfairLock(initialState: (ready: 0, total: 0))
 }
 
 /// Maintains app-wide state
@@ -108,24 +112,78 @@ class AppModel {
         }
         print("[iCloud] container URL: \(iCloudBase.path)")
 
-        guard let files = try? FileManager.default.contentsOfDirectory(
-            at: iCloudBase,
-            includingPropertiesForKeys: [.ubiquitousItemDownloadingStatusKey]
-        ) else {
-            print("[iCloud prefetch] ❌ cannot list files")
+        // ディレクトリ存在チェック（iCloud同期待ちブロックを回避）
+        let fm = FileManager.default
+        var isDir: ObjCBool = false
+        let exists = fm.fileExists(atPath: iCloudBase.path, isDirectory: &isDir)
+        print("[iCloud] directory exists: \(exists), isDir: \(isDir.boolValue)")
+
+        if !exists {
+            do {
+                try fm.createDirectory(at: iCloudBase, withIntermediateDirectories: true)
+                print("[iCloud] ✅ created directory: \(iCloudBase.path)")
+            } catch {
+                print("[iCloud] ❌ failed to create directory: \(error)")
+            }
+            print("[iCloud prefetch] directory was missing — no files to fetch yet")
             return
         }
-        print("[iCloud] ✅ files count: \(files.count)")
 
-        var requested = 0
-        for file in files {
-            let status = try? file.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey])
-            if status?.ubiquitousItemDownloadingStatus != .current {
-                try? FileManager.default.startDownloadingUbiquitousItem(at: file)
-                requested += 1
-            }
+        // パスベースで高速にファイル名一覧を取得
+        let allNames: [String]
+        do {
+            allNames = try fm.contentsOfDirectory(atPath: iCloudBase.path)
+            print("[iCloud] ✅ files count: \(allNames.count)")
+            allNames.prefix(5).forEach { print("[iCloud]   \($0)") }
+        } catch {
+            print("[iCloud] ❌ contentsOfDirectory error: \(error)")
+            return
         }
-        print("[iCloud prefetch] ✅ download requested: \(requested) files")
+
+        let plyNames = allNames.filter { $0.hasSuffix(".ply") }.sorted()
+        guard !plyNames.isEmpty else {
+            print("[iCloud prefetch] no PLY files found")
+            return
+        }
+        let totalPLY = plyNames.count
+        print("[iCloud prefetch] PLY files: \(totalPLY)")
+
+        // 進捗の合計を即座に設定（Renderer が参照できるように）
+        ICloudContainer.downloadProgress.withLock { $0 = (ready: 0, total: totalPLY) }
+
+        // ダウンロードリクエストはバックグラウンドで（ブロックしない）
+        let baseForBG = iCloudBase
+        DispatchQueue.global(qos: .utility).async {
+            for name in plyNames {
+                try? FileManager.default.startDownloadingUbiquitousItem(
+                    at: baseForBG.appendingPathComponent(name))
+            }
+            print("[iCloud prefetch] download requested for \(totalPLY) files")
+        }
+
+        // サンプルチェック用 URL（均等分布）
+        let sampleSize = min(20, totalPLY)
+        let step = max(1, totalPLY / sampleSize)
+        let sampleURLs = stride(from: 0, to: totalPLY, by: step)
+            .map { iCloudBase.appendingPathComponent(plyNames[$0]) }
+
+        // ポーリングでダウンロード完了を待つ
+        while true {
+            let readyCount = sampleURLs.filter { url in
+                guard let vals = try? url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey]) else { return false }
+                return vals.ubiquitousItemDownloadingStatus == .current
+            }.count
+            // サンプル比率から全体の推定ダウンロード数を算出
+            let estimatedReady = readyCount * totalPLY / sampleURLs.count
+            ICloudContainer.downloadProgress.withLock { $0.ready = estimatedReady }
+            print("[iCloud] download: \(estimatedReady) / \(totalPLY)")
+            if readyCount == sampleURLs.count {
+                print("[iCloud] ✅ all files downloaded")
+                ICloudContainer.downloadReady.withLock { $0 = true }
+                return
+            }
+            Thread.sleep(forTimeInterval: 10)
+        }
     }
 
     private func startARSession() async {

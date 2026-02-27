@@ -36,8 +36,8 @@ struct PointCloudData {
         self.pointCount = pointCount
 
         // Input buffer: PLY バイナリを1回のコピーで直接転送（中間配列なし）
-        // 27 bytes/point (packed): float x,y,z + uchar r,g,b + float vx,vy,vz
-        let bytesPerPoint = 27
+        // 15 bytes/point (packed): float x,y,z + uchar r,g,b
+        let bytesPerPoint = 15
         let inputByteCount = pointCount * bytesPerPoint
 
         guard let inputBuf = data.withUnsafeBytes({ rawBuffer -> MTLBuffer? in

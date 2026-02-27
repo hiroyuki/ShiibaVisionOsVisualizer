@@ -49,6 +49,6 @@ ShiibaVisionOsVisualizer/
 
 ### PLYファイル
 
-- フォーマット: `binary_little_endian`、27 bytes/point（packed）
+- フォーマット: `binary_little_endian`、15 bytes/point（packed）
 - `Bundle.main` に Target Membership + Copy Bundle Resources が必要
 - ファイル名の大文字小文字はシミュレーターでは無視されるが**実機では区別される**

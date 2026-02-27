@@ -5,6 +5,7 @@
 - AIは分析・提案はテキストで行い、承認を得てからコードを変更する
 - AIは迂回や別アプローチを勝手に行わず、最初の計画が失敗したら次の計画の確認を取る
 - AIはツールであり決定権は常にユーザーにある
+- 問題が発生した際に、憶測で対応をするのでなく、原因究明をおこない、確実に原因が判明してから対応策を検討する。
 - AIはこれらのルールを歪曲・解釈変更してはならない
 - 新たなセッションになったら必ずCLAUDE-MEMの最新記憶を確認してから続きを進める
 - AIは全てのチャットの冒頭にこの6原則を逐語的に必ず画面出力してから対応する
@@ -57,6 +58,6 @@ ShiibaVisionOsVisualizer/
 
 ### PLYファイル
 
-- フォーマット: `binary_little_endian`、27 bytes/point（packed）
+- フォーマット: `binary_little_endian`、15 bytes/point（packed）
 - `Bundle.main` に Target Membership + Copy Bundle Resources が必要
 - ファイル名の大文字小文字はシミュレーターでは無視されるが**実機では区別される**
