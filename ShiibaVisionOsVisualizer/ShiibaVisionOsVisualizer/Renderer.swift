@@ -98,6 +98,9 @@ actor Renderer {
     // Axes renderer for placement mode
     let axesRenderer: AxesRenderer
 
+    // USDZ model renderer
+    let usdzRenderer: USDZRenderer
+
     // Background overlay (semi-transparent black)
     let overlayPipeline: MTLRenderPipelineState
     let overlayDepthState: MTLDepthStencilState
@@ -162,6 +165,8 @@ actor Renderer {
             axesRenderer = try AxesRenderer(device: device, library: library, layerRenderer: layerRenderer)
             // Initialize axes at eye level, 1m in front (visible immediately)
             axesRenderer.modelMatrix = matrix4x4_translation(0, 0, -1.0)
+
+            usdzRenderer = try USDZRenderer(device: device, library: library, layerRenderer: layerRenderer)
 
             // Background overlay pipeline
             let overlayDesc = MTLRenderPipelineDescriptor()
@@ -690,6 +695,7 @@ actor Renderer {
     private func updateModelMatrices(_ matrix: matrix_float4x4) {
         pointCloudRenderer.modelMatrix = matrix
         axesRenderer.modelMatrix = matrix
+        usdzRenderer.modelMatrix = matrix
         // Also update uniforms for current frame
         uniforms[0].modelMatrix = matrix
     }
@@ -855,6 +861,7 @@ actor Renderer {
             // Update matrices immediately
             self.pointCloudRenderer.modelMatrix = matrixToUse
             self.axesRenderer.modelMatrix = matrixToUse
+            self.usdzRenderer.modelMatrix = matrixToUse
             self.uniforms[0].modelMatrix = matrixToUse
         }
 
@@ -964,6 +971,17 @@ actor Renderer {
                 data: data,
                 uniformsBuffer: dynamicUniformBuffer,
                 uniformsOffset: uniformBufferOffset,
+                viewProjectionBuffer: drawableTarget.viewProjectionBuffer,
+                viewProjectionOffset: drawableTarget.viewProjectionBufferOffset,
+                viewports: viewports,
+                viewCount: drawable.views.count
+            )
+        }
+
+        // 3) USDZ model (rendered alongside point cloud)
+        if currentDisplayMode == .pointCloud {
+            usdzRenderer.renderInto(
+                encoder: encoder,
                 viewProjectionBuffer: drawableTarget.viewProjectionBuffer,
                 viewProjectionOffset: drawableTarget.viewProjectionBufferOffset,
                 viewports: viewports,
