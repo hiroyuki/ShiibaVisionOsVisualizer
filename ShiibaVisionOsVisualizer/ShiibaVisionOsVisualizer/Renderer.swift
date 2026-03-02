@@ -58,7 +58,16 @@ struct SharedRenderState: Sendable {
     var displayMode: AppModel.DisplayMode = .pointCloud
     var anchorTransform: matrix_float4x4? = nil
     var floorY: Float? = nil
+    var immersiveSpaceOpen: Bool = false
 }
+
+enum OSCCommand: Sendable {
+    case play, pause, resume, stop, rewind
+    case seek(Int)
+    case removeAnchor
+}
+
+nonisolated let oscCommandQueue = OSAllocatedUnfairLock(initialState: [OSCCommand]())
 
 nonisolated let sharedRenderState = OSAllocatedUnfairLock(initialState: SharedRenderState())
 
@@ -111,14 +120,8 @@ actor Renderer {
     // OSC
     enum PlaybackState { case stopped, playing, paused }
     private var playbackState: PlaybackState = .stopped
-    private var oscManager: OSCManager?
+    private var oscSender: OSCManager?
 
-    private enum OSCCommand: Sendable {
-        case play, pause, resume, stop, rewind
-        case seek(Int)
-        case removeAnchor
-    }
-    private nonisolated let oscCommandQueue = OSAllocatedUnfairLock(initialState: [OSCCommand]())
 
     // Cached scan results (avoid repeated iCloud directory scans)
     private var cachedPLYURLs: [URL]?  // nil = not yet scanned
@@ -292,7 +295,8 @@ actor Renderer {
             await renderer.startARSession(arSession)
             
             // OSC setup (before animation so /played can be sent)
-            await renderer.setupOSC()
+            let oscMgr = await appModel.oscManager
+            await renderer.setupOSC(oscManager: oscMgr)
             
             // Start animation or load single frame depending on available files
             if initialMode == .pointCloud {
@@ -406,7 +410,7 @@ actor Renderer {
                 pNode?.play()
             })
             playbackState = .playing
-            oscManager?.send(OSCMessage(address: "/played"))
+            oscSender?.send(OSCMessage(address: "/played"))
         } else if let url = urls.first {
             // シングルフレーム（シミュレーター等）: 従来方式
             await pointCloudRenderer.loadSingleFrame(url: url)
@@ -493,32 +497,9 @@ actor Renderer {
 
     // MARK: - OSC Setup & Playback Control
 
-    private func setupOSC() {
-        let cmdQueue = self.oscCommandQueue
-        let manager = OSCManager { message in
-            let command: OSCCommand?
-            switch message.address {
-            case "/play":    command = .play
-            case "/pause":   command = .pause
-            case "/resume":  command = .resume
-            case "/stop":    command = .stop
-            case "/rewind":        command = .rewind
-            case "/removeAnchor":  command = .removeAnchor
-            case "/seek":
-                if case .int32(let frame) = message.arguments.first {
-                    command = .seek(Int(frame))
-                } else { command = nil }
-            default:
-                print("[OSC] Unknown address: \(message.address)")
-                command = nil
-            }
-            if let command {
-                cmdQueue.withLock { $0.append(command) }
-            }
-        }
-        manager.start()
-        self.oscManager = manager
-        print("[Renderer] OSC ready (recv: \(OSCManager.receivePort), send: \(OSCManager.sendHost):\(OSCManager.sendPort))")
+    private func setupOSC(oscManager: OSCManager?) {
+        self.oscSender = oscManager
+        print("[Renderer] OSC sender configured")
     }
 
     /// レンダーループから毎フレーム呼ばれ、キューに溜まったOSCコマンドを処理
@@ -573,7 +554,7 @@ actor Renderer {
         })
 
         playbackState = .playing
-        oscManager?.send(OSCMessage(address: "/played"))
+        oscSender?.send(OSCMessage(address: "/played"))
         print("[OSC] Play")
     }
 
@@ -582,7 +563,7 @@ actor Renderer {
         pointCloudRenderer.pauseAnimation()
         playerNode?.pause()
         playbackState = .paused
-        oscManager?.send(OSCMessage(address: "/paused"))
+        oscSender?.send(OSCMessage(address: "/paused"))
         print("[OSC] Paused")
     }
 
@@ -591,7 +572,7 @@ actor Renderer {
         pointCloudRenderer.resumeAnimation()
         playerNode?.play()
         playbackState = .playing
-        oscManager?.send(OSCMessage(address: "/resumed"))
+        oscSender?.send(OSCMessage(address: "/resumed"))
         print("[OSC] Resumed")
     }
 
@@ -600,7 +581,7 @@ actor Renderer {
         pointCloudRenderer.clearDisplay()
         stopAudio()
         playbackState = .stopped
-        oscManager?.send(OSCMessage(address: "/stopped"))
+        oscSender?.send(OSCMessage(address: "/stopped"))
         print("[OSC] Stopped")
     }
 
@@ -608,7 +589,7 @@ actor Renderer {
         guard playbackState != .stopped else { return }
         pointCloudRenderer.seekAnimation(to: frameIndex)
         seekAudio(to: frameIndex)
-        oscManager?.send(OSCMessage(address: "/seeked", arguments: [.int32(Int32(frameIndex))]))
+        oscSender?.send(OSCMessage(address: "/seeked", arguments: [.int32(Int32(frameIndex))]))
         print("[OSC] Seeked to frame \(frameIndex)")
     }
 
@@ -617,7 +598,7 @@ actor Renderer {
     }
 
     private func oscRemoveAnchor() {
-        let osc = oscManager
+        let osc = oscSender
         Task { @MainActor in
             let removed = await appModel.worldAnchorManager.removeCurrentAnchor()
             if removed {
@@ -982,6 +963,7 @@ actor Renderer {
 
     func renderLoop() {
         print("render loop started")
+        sharedRenderState.withLock { $0.immersiveSpaceOpen = true }
         while true {
             // Process pending OSC commands each frame
             processOSCCommands()
@@ -990,9 +972,9 @@ actor Renderer {
                 print("Layer is invalidated")
                 pointCloudRenderer.stopAnimation()
                 stopAudio()
-                oscManager?.send(OSCMessage(address: "/stopped"))
-                oscManager?.stop()
+                oscSender?.send(OSCMessage(address: "/stopped"))
                 playbackState = .stopped
+                sharedRenderState.withLock { $0.immersiveSpaceOpen = false }
                 Task { @MainActor in
                     appModel.immersiveSpaceState = .closed
                 }

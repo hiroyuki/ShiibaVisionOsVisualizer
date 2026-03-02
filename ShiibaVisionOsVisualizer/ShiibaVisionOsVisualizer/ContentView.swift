@@ -207,6 +207,17 @@ struct ContentView: View {
                 dismissWindow()
             }
         }
+        .onChange(of: appModel.oscPlayRequested) { _, requested in
+            guard requested else { return }
+            appModel.oscPlayRequested = false
+            Task {
+                appModel.enterPointCloudMode()
+                if appModel.immersiveSpaceState != .open {
+                    await openImmersiveSpace(id: appModel.immersiveSpaceID)
+                }
+                dismissWindow()
+            }
+        }
     }
 }
 

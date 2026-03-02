@@ -79,6 +79,10 @@ class AppModel {
     // Preview offset from device (default: 1.0m forward, at eye level)
     var previewOffsetFromDevice: SIMD3<Float> = SIMD3<Float>(0, 0, -1.0)
 
+    // OSC
+    var oscPlayRequested: Bool = false
+    private(set) var oscManager: OSCManager?
+
     /// アンカー未設定時にWindowを開く
     func requestWindowIfNeeded() {
         guard worldAnchorID == nil && !isRunningOnSimulator else { return }
@@ -120,6 +124,8 @@ class AppModel {
                 await startARSession()
             }
         }
+
+        setupOSC()
     }
     
     private nonisolated static func prefetchiCloudFiles() {
@@ -339,6 +345,47 @@ class AppModel {
         
         print("[AppModel] ✅ Placement confirmed at position: \(anchorPosition) (floor Y: \(floorY), yaw: \(yaw * 180 / .pi)°)")
         print("[AppModel] 💡 Ready to close immersive space and return to window")
+    }
+
+    // MARK: - OSC Setup
+
+    private func setupOSC() {
+        let manager = OSCManager { [weak self] message in
+            let isOpen = sharedRenderState.withLock { $0.immersiveSpaceOpen }
+
+            let command: OSCCommand?
+            switch message.address {
+            case "/play":    command = .play
+            case "/pause":   command = .pause
+            case "/resume":  command = .resume
+            case "/stop":    command = .stop
+            case "/rewind":  command = .rewind
+            case "/removeAnchor": command = .removeAnchor
+            case "/seek":
+                if case .int32(let frame) = message.arguments.first {
+                    command = .seek(Int(frame))
+                } else { command = nil }
+            default:
+                print("[OSC] Unknown address: \(message.address)")
+                command = nil
+            }
+
+            guard let command else { return }
+
+            if isOpen {
+                // Renderer is running — forward to its command queue
+                oscCommandQueue.withLock { $0.append(command) }
+            } else if case .play = command {
+                // Renderer not running — request ImmersiveSpace launch
+                Task { @MainActor in
+                    self?.oscPlayRequested = true
+                }
+            }
+            // Other commands while Renderer is not running are ignored
+        }
+        manager.start()
+        self.oscManager = manager
+        print("[AppModel] OSC ready (recv: \(OSCManager.receivePort), send: \(OSCManager.sendHost):\(OSCManager.sendPort))")
     }
 }
 
