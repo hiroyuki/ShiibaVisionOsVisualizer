@@ -184,6 +184,19 @@ struct ContentView: View {
         }
         .padding()
         .onAppear {
+            // Auto-start check
+            if appModel.autoStartEnabled && appModel.worldAnchorID != nil {
+                Task {
+                    appModel.enterPointCloudMode()
+                    if appModel.immersiveSpaceState != .open {
+                        await openImmersiveSpace(id: appModel.immersiveSpaceID)
+                    }
+                    dismissWindow()
+                    print("[ContentView] Auto-start: point cloud playback started")
+                }
+            }
+
+            // Existing iCloud prefetch
             Task.detached(priority: .utility) {
                 checkiCloudFiles()
                 prefetchAllFiles()

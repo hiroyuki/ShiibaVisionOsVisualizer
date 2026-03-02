@@ -90,7 +90,12 @@ class AppModel {
         )
     }
 
+    var autoStartEnabled: Bool {
+        UserDefaults.standard.bool(forKey: "auto_start_enabled")
+    }
+
     init() {
+        UserDefaults.standard.register(defaults: ["auto_start_enabled": false])
         worldAnchorManager = WorldAnchorManager(worldTracking: worldTracking)
         worldAnchorManager.loadSavedAnchorID()
 
