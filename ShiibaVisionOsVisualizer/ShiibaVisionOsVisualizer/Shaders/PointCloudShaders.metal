@@ -76,10 +76,14 @@ kernel void pointCloudConvert(
     UnityPointData src = inputPoints[index];
 
     // Unity (left-handed) → VisionOS (right-handed): negate X axis
+    // Y座標フィルタリング: 2cm以下のポイントは w=0.0 で無効化（床面ノイズ除去）
+    float yThreshold = 0.02;
+    float w = (src.position.y >= yThreshold) ? 1.0 : 0.0;
+
     outputPoints[index].position = float4(-src.position.x,
                                            src.position.y,
                                            src.position.z,
-                                           1.0);
+                                           w);
 
     // PLY の色データ (sRGB, 0-255) を正規化して渡す。
     outputPoints[index].color = float4(float(src.r) / 255.0,
@@ -103,6 +107,15 @@ vertex PointFragIn pointCloudVertex(
     uint   instanceID                                   [[ instance_id                         ]]
 ) {
     PointVertex point = points[instanceID];
+
+    // 無効化されたポイント（w=0.0）はクリップ空間外に配置してカリング
+    if (point.position.w == 0.0) {
+        PointFragIn out;
+        out.position = float4(0, 0, -2, 1);
+        out.color = float3(0);
+        out.uv = float2(0);
+        return out;
+    }
 
     float4 worldPos = uniforms.modelMatrix * float4(point.position.xyz, 1.0);
 
