@@ -68,9 +68,8 @@ final class AxesRenderer {
         self.depthState = device.makeDepthStencilState(descriptor: depthDescriptor)!
         
         // Create vertices for XYZ axes as triangles (lines as thin quads)
-        // Each axis is rendered as a cylinder approximation (thin rectangular prism)
-        let axisLength: Float = 0.5  // 50cm - more visible
-        let thickness: Float = 0.01  // 1cm thick - more visible
+        let axisLength: Float = AppConfig.Rendering.axisLength
+        let thickness: Float = AppConfig.Rendering.axisThickness
         
         var vertices: [AxisVertex] = []
         

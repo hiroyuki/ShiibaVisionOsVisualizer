@@ -31,6 +31,7 @@ typedef NS_ENUM(EnumBackingType, BufferIndex)
     // Point Cloud
     BufferIndexPointCloudInput  = 4,  // Compute shader input (Unity format)
     BufferIndexPointCloudOutput = 5,  // Compute shader output (VisionOS format)
+    BufferIndexRenderParams     = 6,  // Rendering parameters (from Settings)
 };
 
 typedef NS_ENUM(EnumBackingType, VertexAttribute)
@@ -54,6 +55,13 @@ typedef struct
     matrix_float4x4 modelMatrix;
 } Uniforms;
 
+typedef struct
+{
+    float pointPhysicalSize;
+    float floorNoiseThreshold;
+    float overlayAlpha;
+    float padding;
+} RenderParams;
 
 #endif /* ShaderTypes_h */
 

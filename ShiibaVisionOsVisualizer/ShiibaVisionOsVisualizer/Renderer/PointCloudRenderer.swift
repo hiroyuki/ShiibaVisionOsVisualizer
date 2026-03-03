@@ -17,6 +17,7 @@ private let kBufferIndexUniforms            = 2
 private let kBufferIndexViewProjection      = 3
 private let kBufferIndexPointCloudInput     = 4
 private let kBufferIndexPointCloudOutput    = 5
+private let kBufferIndexRenderParams        = 6
 
 /// Manages the compute + render pipeline for point cloud visualization.
 /// - Loads PLY data from the app bundle
@@ -131,8 +132,8 @@ final class PointCloudRenderer {
         animationTask = Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             let clock = ContinuousClock()
-            // 30fps = 33.333...ms/frame
-            let frameDurationNs: Int64 = 33_333_333
+            let fps = AppConfig.Playback.frameRate
+            let frameDurationNs: Int64 = Int64(1_000_000_000.0 / Double(fps))
             let loader = PLYLoader()
 
             // === Phase 1: オーディオ開始前 — frame 0をロードして待機 ===
@@ -148,7 +149,7 @@ final class PointCloudRenderer {
             while !Task.isCancelled {
                 let started = self.pendingLock.withLock { self._audioPlaybackStarted }
                 if started { break }
-                try? await Task.sleep(for: .milliseconds(5), clock: clock)
+                try? await Task.sleep(for: .milliseconds(AppConfig.Playback.animationSleepMs), clock: clock)
             }
             guard !Task.isCancelled else { return }
 
@@ -161,7 +162,7 @@ final class PointCloudRenderer {
                 // ポーズ処理
                 if self.playbackControl.withLock({ $0.isPaused }) {
                     if pauseStart == nil { pauseStart = clock.now }
-                    try? await Task.sleep(for: .milliseconds(50))
+                    try? await Task.sleep(for: .milliseconds(AppConfig.Playback.pauseSleepMs))
                     continue
                 } else if let ps = pauseStart {
                     // resume: 絶対タイムラインをポーズ分だけシフト
@@ -199,8 +200,8 @@ final class PointCloudRenderer {
                 }
 
                 // 同期ログ（30フレームごと ≒ 約1秒間隔）
-                if let audioTime, frameIndex % 300 == 0 {
-                    let plyTime = Double(frameIndex) / 30.0
+                if let audioTime, frameIndex % (Int(fps) * 10) == 0 {
+                    let plyTime = Double(frameIndex) / Double(fps)
                     let audioSec = audioTime() ?? -1
                     let drift = plyTime - audioSec
                     let driftStr = String(format: "%+.3f", drift)
@@ -278,6 +279,7 @@ final class PointCloudRenderer {
         uniformsOffset: Int,
         viewProjectionBuffer: MTLBuffer,
         viewProjectionOffset: Int,
+        renderParamsBuffer: MTLBuffer,
         viewports: [MTLViewport],
         viewCount: Int
     ) {
@@ -301,7 +303,7 @@ final class PointCloudRenderer {
         // Step 1: Compute pass (Unity → VisionOS conversion)
         // Only needs to run once since this is a static frame (Phase 1)
         if !isConverted {
-            encodeCompute(commandBuffer: commandBuffer, data: data)
+            encodeCompute(commandBuffer: commandBuffer, data: data, renderParamsBuffer: renderParamsBuffer)
             isConverted = true
         }
 
@@ -314,6 +316,7 @@ final class PointCloudRenderer {
             uniformsOffset: uniformsOffset,
             viewProjectionBuffer: viewProjectionBuffer,
             viewProjectionOffset: viewProjectionOffset,
+            renderParamsBuffer: renderParamsBuffer,
             viewports: viewports,
             viewCount: viewCount
         )
@@ -321,13 +324,14 @@ final class PointCloudRenderer {
 
     // MARK: - Private
 
-    private func encodeCompute(commandBuffer: MTLCommandBuffer, data: PointCloudData) {
+    private func encodeCompute(commandBuffer: MTLCommandBuffer, data: PointCloudData, renderParamsBuffer: MTLBuffer) {
         guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
         encoder.label = "PointCloud Compute"
 
         encoder.setComputePipelineState(computePipeline)
         encoder.setBuffer(data.inputBuffer,  offset: 0, index: kBufferIndexPointCloudInput)
         encoder.setBuffer(data.outputBuffer, offset: 0, index: kBufferIndexPointCloudOutput)
+        encoder.setBuffer(renderParamsBuffer, offset: 0, index: kBufferIndexRenderParams)
 
         let threadCount    = data.pointCount
         let threadsPerGroup = min(computePipeline.maxTotalThreadsPerThreadgroup, 512)
@@ -347,6 +351,7 @@ final class PointCloudRenderer {
         uniformsOffset: Int,
         viewProjectionBuffer: MTLBuffer,
         viewProjectionOffset: Int,
+        renderParamsBuffer: MTLBuffer,
         viewports: [MTLViewport],
         viewCount: Int
     ) {
@@ -355,6 +360,7 @@ final class PointCloudRenderer {
         renderInto(encoder: encoder, data: data,
                    uniformsBuffer: uniformsBuffer, uniformsOffset: uniformsOffset,
                    viewProjectionBuffer: viewProjectionBuffer, viewProjectionOffset: viewProjectionOffset,
+                   renderParamsBuffer: renderParamsBuffer,
                    viewports: viewports, viewCount: viewCount)
         encoder.endEncoding()
     }
@@ -367,6 +373,7 @@ final class PointCloudRenderer {
         uniformsOffset: Int,
         viewProjectionBuffer: MTLBuffer,
         viewProjectionOffset: Int,
+        renderParamsBuffer: MTLBuffer,
         viewports: [MTLViewport],
         viewCount: Int
     ) {
@@ -387,12 +394,13 @@ final class PointCloudRenderer {
         encoder.setVertexBuffer(uniformsBuffer, offset: uniformsOffset, index: kBufferIndexUniforms)
         encoder.setVertexBuffer(viewProjectionBuffer, offset: viewProjectionOffset, index: kBufferIndexViewProjection)
         encoder.setVertexBuffer(data.outputBuffer, offset: 0, index: kBufferIndexPointCloudOutput)
+        encoder.setVertexBuffer(renderParamsBuffer, offset: 0, index: kBufferIndexRenderParams)
 
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: data.pointCount)
     }
 
     /// Prepare frame data and run compute pass. Returns true if data is ready to render.
-    func prepareFrame(commandBuffer: MTLCommandBuffer) -> Bool {
+    func prepareFrame(commandBuffer: MTLCommandBuffer, renderParamsBuffer: MTLBuffer) -> Bool {
         let next: PointCloudData? = pendingLock.withLock {
             defer { _pendingFrame = nil }
             return _pendingFrame
@@ -408,7 +416,7 @@ final class PointCloudRenderer {
         }
         guard let data = pointCloudData else { return false }
         if !isConverted {
-            encodeCompute(commandBuffer: commandBuffer, data: data)
+            encodeCompute(commandBuffer: commandBuffer, data: data, renderParamsBuffer: renderParamsBuffer)
             isConverted = true
         }
         return true

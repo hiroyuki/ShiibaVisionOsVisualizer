@@ -99,7 +99,6 @@ class AppModel {
     }
 
     init() {
-        UserDefaults.standard.register(defaults: ["auto_start_enabled": false])
         worldAnchorManager = WorldAnchorManager(worldTracking: worldTracking)
         worldAnchorManager.loadSavedAnchorID()
 
@@ -185,7 +184,7 @@ class AppModel {
         }
 
         // サンプルチェック用 URL（均等分布）
-        let sampleSize = min(20, totalPLY)
+        let sampleSize = min(AppConfig.ICloud.sampleSize, totalPLY)
         let step = max(1, totalPLY / sampleSize)
         let sampleURLs = stride(from: 0, to: totalPLY, by: step)
             .map { iCloudBase.appendingPathComponent(plyNames[$0]) }
@@ -205,7 +204,7 @@ class AppModel {
                 ICloudContainer.downloadReady.withLock { $0 = true }
                 return
             }
-            Thread.sleep(forTimeInterval: 10)
+            Thread.sleep(forTimeInterval: TimeInterval(AppConfig.ICloud.pollInterval))
         }
     }
 
@@ -411,7 +410,7 @@ class AppModel {
         }
         manager.start()
         self.oscManager = manager
-        print("[AppModel] OSC ready (recv: \(OSCManager.receivePort), send: \(OSCManager.sendHost):\(OSCManager.sendPort))")
+        print("[AppModel] OSC ready (recv: \(manager.receivePort), send: \(manager.sendHost):\(manager.sendPort))")
     }
 }
 

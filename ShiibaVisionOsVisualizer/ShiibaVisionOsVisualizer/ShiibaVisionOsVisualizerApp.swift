@@ -36,7 +36,12 @@ extension ImmersiveSpaceContent: CompositorLayerConfiguration {
 @main
 struct ShiibaVisionOsVisualizerApp: App {
 
-    @State private var appModel = AppModel()
+    @State private var appModel: AppModel
+
+    init() {
+        AppConfig.registerDefaults()
+        _appModel = State(initialValue: AppModel())
+    }
 
     var body: some Scene {
         WindowGroup {

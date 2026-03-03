@@ -30,7 +30,7 @@ final class TitleRenderer {
 
     private var showStartTime: CFAbsoluteTime = 0
     private var isShowing: Bool = false
-    private let displayDuration: CFAbsoluteTime = 5.0
+    private let displayDuration: CFAbsoluteTime
 
     // MARK: - Init
 
@@ -46,8 +46,10 @@ final class TitleRenderer {
             .textureStorageMode: NSNumber(value: MTLStorageMode.shared.rawValue)
         ])
 
-        // 2. Calculate quad size from aspect ratio (width fixed at 1.0m)
-        let quadWidth: Float = 0.5
+        self.displayDuration = CFAbsoluteTime(AppConfig.Rendering.titleDisplayDuration)
+
+        // 2. Calculate quad size from aspect ratio
+        let quadWidth: Float = AppConfig.Rendering.titleQuadWidth
         let aspect = Float(texture.height) / Float(texture.width)
         let quadHeight = quadWidth * aspect
 

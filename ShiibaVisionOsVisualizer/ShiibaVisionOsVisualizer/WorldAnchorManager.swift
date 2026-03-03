@@ -71,11 +71,13 @@ class WorldAnchorManager {
     func removeAllAnchors() async {
         print("[WorldAnchorManager] 🗑️ Removing all existing WorldAnchors...")
 
-        // Wait for provider to be running (up to 3 seconds)
+        // Wait for provider to be running
+        let maxRetries = AppConfig.WorldTracking.retryCount
+        let retryIntervalMs = AppConfig.WorldTracking.retryIntervalMs
         var retryCount = 0
-        while worldTracking.state != .running && retryCount < 15 {
-            print("[WorldAnchorManager] ⏳ Waiting for WorldTracking provider... (\(retryCount + 1)/15)")
-            try? await Task.sleep(for: .milliseconds(200))
+        while worldTracking.state != .running && retryCount < maxRetries {
+            print("[WorldAnchorManager] ⏳ Waiting for WorldTracking provider... (\(retryCount + 1)/\(maxRetries))")
+            try? await Task.sleep(for: .milliseconds(retryIntervalMs))
             retryCount += 1
         }
 

@@ -4,6 +4,7 @@
 <dict>
     <key>PreferenceSpecifiers</key>
     <array>
+        <!-- Auto Start -->
         <dict>
             <key>Type</key>
             <string>PSToggleSwitchSpecifier</string>
@@ -13,6 +14,340 @@
             <string>auto_start_enabled</string>
             <key>DefaultValue</key>
             <false/>
+        </dict>
+
+        <!-- A: Network / OSC -->
+        <dict>
+            <key>Type</key>
+            <string>PSGroupSpecifier</string>
+            <key>Title</key>
+            <string>Network / OSC</string>
+        </dict>
+        <dict>
+            <key>Type</key>
+            <string>PSTextFieldSpecifier</string>
+            <key>Title</key>
+            <string>Receive Port</string>
+            <key>Key</key>
+            <string>osc_receive_port</string>
+            <key>DefaultValue</key>
+            <string>9999</string>
+            <key>KeyboardType</key>
+            <string>NumberPad</string>
+        </dict>
+        <dict>
+            <key>Type</key>
+            <string>PSTextFieldSpecifier</string>
+            <key>Title</key>
+            <string>Send Port</string>
+            <key>Key</key>
+            <string>osc_send_port</string>
+            <key>DefaultValue</key>
+            <string>9998</string>
+            <key>KeyboardType</key>
+            <string>NumberPad</string>
+        </dict>
+        <dict>
+            <key>Type</key>
+            <string>PSTextFieldSpecifier</string>
+            <key>Title</key>
+            <string>Send Host</string>
+            <key>Key</key>
+            <string>osc_send_host</string>
+            <key>DefaultValue</key>
+            <string>192.168.0.7</string>
+        </dict>
+
+        <!-- B: Rendering -->
+        <dict>
+            <key>Type</key>
+            <string>PSGroupSpecifier</string>
+            <key>Title</key>
+            <string>Rendering</string>
+        </dict>
+        <dict>
+            <key>Type</key>
+            <string>PSTextFieldSpecifier</string>
+            <key>Title</key>
+            <string>Point Size (m)</string>
+            <key>Key</key>
+            <string>point_physical_size</string>
+            <key>DefaultValue</key>
+            <string>0.001</string>
+            <key>KeyboardType</key>
+            <string>DecimalPad</string>
+        </dict>
+        <dict>
+            <key>Type</key>
+            <string>PSTextFieldSpecifier</string>
+            <key>Title</key>
+            <string>Floor Noise Threshold</string>
+            <key>Key</key>
+            <string>floor_noise_threshold</string>
+            <key>DefaultValue</key>
+            <string>0.02</string>
+            <key>KeyboardType</key>
+            <string>DecimalPad</string>
+        </dict>
+        <dict>
+            <key>Type</key>
+            <string>PSTextFieldSpecifier</string>
+            <key>Title</key>
+            <string>Overlay Alpha</string>
+            <key>Key</key>
+            <string>overlay_alpha</string>
+            <key>DefaultValue</key>
+            <string>0.2</string>
+            <key>KeyboardType</key>
+            <string>DecimalPad</string>
+        </dict>
+        <dict>
+            <key>Type</key>
+            <string>PSTextFieldSpecifier</string>
+            <key>Title</key>
+            <string>Title Duration (s)</string>
+            <key>Key</key>
+            <string>title_display_duration</string>
+            <key>DefaultValue</key>
+            <string>5.0</string>
+            <key>KeyboardType</key>
+            <string>DecimalPad</string>
+        </dict>
+        <dict>
+            <key>Type</key>
+            <string>PSTextFieldSpecifier</string>
+            <key>Title</key>
+            <string>Title Width (m)</string>
+            <key>Key</key>
+            <string>title_quad_width</string>
+            <key>DefaultValue</key>
+            <string>0.5</string>
+            <key>KeyboardType</key>
+            <string>DecimalPad</string>
+        </dict>
+        <dict>
+            <key>Type</key>
+            <string>PSTextFieldSpecifier</string>
+            <key>Title</key>
+            <string>Axis Length (m)</string>
+            <key>Key</key>
+            <string>axis_length</string>
+            <key>DefaultValue</key>
+            <string>0.5</string>
+            <key>KeyboardType</key>
+            <string>DecimalPad</string>
+        </dict>
+        <dict>
+            <key>Type</key>
+            <string>PSTextFieldSpecifier</string>
+            <key>Title</key>
+            <string>Axis Thickness (m)</string>
+            <key>Key</key>
+            <string>axis_thickness</string>
+            <key>DefaultValue</key>
+            <string>0.01</string>
+            <key>KeyboardType</key>
+            <string>DecimalPad</string>
+        </dict>
+
+        <!-- C: Playback -->
+        <dict>
+            <key>Type</key>
+            <string>PSGroupSpecifier</string>
+            <key>Title</key>
+            <string>Playback</string>
+        </dict>
+        <dict>
+            <key>Type</key>
+            <string>PSTextFieldSpecifier</string>
+            <key>Title</key>
+            <string>Frame Rate (fps)</string>
+            <key>Key</key>
+            <string>playback_frame_rate</string>
+            <key>DefaultValue</key>
+            <string>30.0</string>
+            <key>KeyboardType</key>
+            <string>DecimalPad</string>
+        </dict>
+        <dict>
+            <key>Type</key>
+            <string>PSTextFieldSpecifier</string>
+            <key>Title</key>
+            <string>Anim Sleep (ms)</string>
+            <key>Key</key>
+            <string>animation_sleep_ms</string>
+            <key>DefaultValue</key>
+            <string>5</string>
+            <key>KeyboardType</key>
+            <string>NumberPad</string>
+        </dict>
+        <dict>
+            <key>Type</key>
+            <string>PSTextFieldSpecifier</string>
+            <key>Title</key>
+            <string>Pause Sleep (ms)</string>
+            <key>Key</key>
+            <string>pause_sleep_ms</string>
+            <key>DefaultValue</key>
+            <string>50</string>
+            <key>KeyboardType</key>
+            <string>NumberPad</string>
+        </dict>
+
+        <!-- D: Spatial Detection -->
+        <dict>
+            <key>Type</key>
+            <string>PSGroupSpecifier</string>
+            <key>Title</key>
+            <string>Spatial Detection</string>
+        </dict>
+        <dict>
+            <key>Type</key>
+            <string>PSTextFieldSpecifier</string>
+            <key>Title</key>
+            <string>Floor Detect Interval (s)</string>
+            <key>Key</key>
+            <string>floor_detection_interval</string>
+            <key>DefaultValue</key>
+            <string>0.5</string>
+            <key>KeyboardType</key>
+            <string>DecimalPad</string>
+        </dict>
+        <dict>
+            <key>Type</key>
+            <string>PSTextFieldSpecifier</string>
+            <key>Title</key>
+            <string>Floor Y Offset Min (m)</string>
+            <key>Key</key>
+            <string>floor_y_offset_min</string>
+            <key>DefaultValue</key>
+            <string>-1.8</string>
+            <key>KeyboardType</key>
+            <string>NumbersAndPunctuation</string>
+        </dict>
+        <dict>
+            <key>Type</key>
+            <string>PSTextFieldSpecifier</string>
+            <key>Title</key>
+            <string>Floor Y Offset Max (m)</string>
+            <key>Key</key>
+            <string>floor_y_offset_max</string>
+            <key>DefaultValue</key>
+            <string>-1.5</string>
+            <key>KeyboardType</key>
+            <string>NumbersAndPunctuation</string>
+        </dict>
+
+        <!-- E: Spatial Audio -->
+        <dict>
+            <key>Type</key>
+            <string>PSGroupSpecifier</string>
+            <key>Title</key>
+            <string>Spatial Audio</string>
+        </dict>
+        <dict>
+            <key>Type</key>
+            <string>PSTextFieldSpecifier</string>
+            <key>Title</key>
+            <string>Rolloff Factor</string>
+            <key>Key</key>
+            <string>audio_rolloff_factor</string>
+            <key>DefaultValue</key>
+            <string>2.0</string>
+            <key>KeyboardType</key>
+            <string>DecimalPad</string>
+        </dict>
+        <dict>
+            <key>Type</key>
+            <string>PSTextFieldSpecifier</string>
+            <key>Title</key>
+            <string>Reference Distance (m)</string>
+            <key>Key</key>
+            <string>audio_reference_distance</string>
+            <key>DefaultValue</key>
+            <string>1.0</string>
+            <key>KeyboardType</key>
+            <string>DecimalPad</string>
+        </dict>
+        <dict>
+            <key>Type</key>
+            <string>PSTextFieldSpecifier</string>
+            <key>Title</key>
+            <string>Max Distance (m)</string>
+            <key>Key</key>
+            <string>audio_max_distance</string>
+            <key>DefaultValue</key>
+            <string>50.0</string>
+            <key>KeyboardType</key>
+            <string>DecimalPad</string>
+        </dict>
+
+        <!-- F: iCloud / Retry -->
+        <dict>
+            <key>Type</key>
+            <string>PSGroupSpecifier</string>
+            <key>Title</key>
+            <string>iCloud / Retry</string>
+        </dict>
+        <dict>
+            <key>Type</key>
+            <string>PSTextFieldSpecifier</string>
+            <key>Title</key>
+            <string>Sample Size</string>
+            <key>Key</key>
+            <string>icloud_sample_size</string>
+            <key>DefaultValue</key>
+            <string>20</string>
+            <key>KeyboardType</key>
+            <string>NumberPad</string>
+        </dict>
+        <dict>
+            <key>Type</key>
+            <string>PSTextFieldSpecifier</string>
+            <key>Title</key>
+            <string>Poll Interval (s)</string>
+            <key>Key</key>
+            <string>icloud_poll_interval</string>
+            <key>DefaultValue</key>
+            <string>10</string>
+            <key>KeyboardType</key>
+            <string>NumberPad</string>
+        </dict>
+        <dict>
+            <key>Type</key>
+            <string>PSTextFieldSpecifier</string>
+            <key>Title</key>
+            <string>Check Interval (s)</string>
+            <key>Key</key>
+            <string>icloud_check_interval</string>
+            <key>DefaultValue</key>
+            <string>5</string>
+            <key>KeyboardType</key>
+            <string>NumberPad</string>
+        </dict>
+        <dict>
+            <key>Type</key>
+            <string>PSTextFieldSpecifier</string>
+            <key>Title</key>
+            <string>WTrack Retry Count</string>
+            <key>Key</key>
+            <string>world_tracking_retry_count</string>
+            <key>DefaultValue</key>
+            <string>15</string>
+            <key>KeyboardType</key>
+            <string>NumberPad</string>
+        </dict>
+        <dict>
+            <key>Type</key>
+            <string>PSTextFieldSpecifier</string>
+            <key>Title</key>
+            <string>WTrack Retry Interval (ms)</string>
+            <key>Key</key>
+            <string>world_tracking_retry_interval_ms</string>
+            <key>DefaultValue</key>
+            <string>200</string>
+            <key>KeyboardType</key>
+            <string>NumberPad</string>
         </dict>
     </array>
     <key>StringsTable</key>

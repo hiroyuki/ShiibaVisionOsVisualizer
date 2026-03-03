@@ -10,9 +10,9 @@ import Foundation
 import Network
 
 final class OSCManager: Sendable {
-    static let receivePort: UInt16 = 9999
-    static let sendHost = "192.168.0.7"
-    static let sendPort: UInt16 = 9998
+    let receivePort: UInt16
+    let sendHost: String
+    let sendPort: UInt16
 
     private let listener: NWListener
     private let sendConnection: NWConnection
@@ -22,28 +22,36 @@ final class OSCManager: Sendable {
     init(onMessage: @escaping @Sendable (OSCMessage) -> Void) {
         self.onMessage = onMessage
 
+        let recvPort = UInt16(AppConfig.OSC.receivePort)
+        let sndHost = AppConfig.OSC.sendHost
+        let sndPort = UInt16(AppConfig.OSC.sendPort)
+        self.receivePort = recvPort
+        self.sendHost = sndHost
+        self.sendPort = sndPort
+
         // UDP listener on receive port
         let params = NWParameters.udp
         params.allowLocalEndpointReuse = true
-        self.listener = try! NWListener(using: params, on: NWEndpoint.Port(rawValue: Self.receivePort)!)
+        self.listener = try! NWListener(using: params, on: NWEndpoint.Port(rawValue: recvPort)!)
 
         // UDP connection for sending
         let sendEndpoint = NWEndpoint.hostPort(
-            host: NWEndpoint.Host(Self.sendHost),
-            port: NWEndpoint.Port(rawValue: Self.sendPort)!
+            host: NWEndpoint.Host(sndHost),
+            port: NWEndpoint.Port(rawValue: sndPort)!
         )
         self.sendConnection = NWConnection(to: sendEndpoint, using: .udp)
     }
 
     func start() {
         // Start listener
+        let port = self.receivePort
         listener.newConnectionHandler = { [weak self] connection in
             self?.handleConnection(connection)
         }
         listener.stateUpdateHandler = { state in
             switch state {
             case .ready:
-                print("[OSC] Listener ready on port \(Self.receivePort)")
+                print("[OSC] Listener ready on port \(port)")
             case .failed(let error):
                 print("[OSC] Listener failed: \(error)")
             default:

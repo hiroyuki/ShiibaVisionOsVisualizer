@@ -59,8 +59,10 @@ vertex OverlayOut overlayVertex(uint vertexID [[ vertex_id ]]) {
     return out;
 }
 
-fragment float4 overlayFragment() {
-    return float4(0.0, 0.0, 0.0, 0.2);
+fragment float4 overlayFragment(
+    constant RenderParams& params [[ buffer(0) ]]
+) {
+    return float4(0.0, 0.0, 0.0, params.overlayAlpha);
 }
 
 // MARK: - Compute Shader
@@ -71,13 +73,14 @@ fragment float4 overlayFragment() {
 kernel void pointCloudConvert(
     device const UnityPointData* inputPoints  [[ buffer(BufferIndexPointCloudInput)  ]],
     device       PointVertex*    outputPoints [[ buffer(BufferIndexPointCloudOutput) ]],
+    constant     RenderParams&   params       [[ buffer(BufferIndexRenderParams)     ]],
     uint index [[ thread_position_in_grid ]]
 ) {
     UnityPointData src = inputPoints[index];
 
     // Unity (left-handed) → VisionOS (right-handed): negate X axis
-    // Y座標フィルタリング: 2cm以下のポイントは w=0.0 で無効化（床面ノイズ除去）
-    float yThreshold = 0.02;
+    // Y座標フィルタリング: 閾値以下のポイントは w=0.0 で無効化（床面ノイズ除去）
+    float yThreshold = params.floorNoiseThreshold;
     float w = (src.position.y >= yThreshold) ? 1.0 : 0.0;
 
     outputPoints[index].position = float4(-src.position.x,
@@ -102,6 +105,7 @@ vertex PointFragIn pointCloudVertex(
     device const PointVertex*         points            [[ buffer(BufferIndexPointCloudOutput) ]],
     constant     Uniforms&            uniforms          [[ buffer(BufferIndexUniforms)         ]],
     constant     ViewProjectionArray& viewProjection    [[ buffer(BufferIndexViewProjection)   ]],
+    constant     RenderParams&        params            [[ buffer(BufferIndexRenderParams)     ]],
     ushort amp_id                                       [[ amplification_id                    ]],
     uint   vertexID                                     [[ vertex_id                           ]],
     uint   instanceID                                   [[ instance_id                         ]]
@@ -143,7 +147,7 @@ vertex PointFragIn pointCloudVertex(
                              viewProjection.viewProjectionMatrix[amp_id][1][1],
                              viewProjection.viewProjectionMatrix[amp_id][2][1]);
 
-    float  physicalSize = 0.001; // 0.25cm half-extent = 0.5cm diameter
+    float  physicalSize = params.pointPhysicalSize;
     float3 worldOffset  = (camRight * uv.x + camUp * uv.y) * physicalSize;
     float4 clipPos      = viewProjection.viewProjectionMatrix[amp_id]
                           * (worldPos + float4(worldOffset, 0.0));

@@ -117,6 +117,9 @@ actor Renderer {
     let overlayPipeline: MTLRenderPipelineState
     let overlayDepthState: MTLDepthStencilState
 
+    // Render parameters buffer (shared with Metal shaders)
+    let renderParamsBuffer: MTLBuffer
+
     // Spatial audio engine
     private var audioEngine: AVAudioEngine?
     private var playerNode: AVAudioPlayerNode?
@@ -204,6 +207,20 @@ actor Renderer {
             overlayDepthDesc.depthCompareFunction = .always
             overlayDepthDesc.isDepthWriteEnabled = true
             overlayDepthState = device.makeDepthStencilState(descriptor: overlayDepthDesc)!
+
+            // RenderParams buffer (read from Settings at init time)
+            var renderParams = RenderParams(
+                pointPhysicalSize: AppConfig.Rendering.pointPhysicalSize,
+                floorNoiseThreshold: AppConfig.Rendering.floorNoiseThreshold,
+                overlayAlpha: AppConfig.Rendering.overlayAlpha,
+                padding: 0
+            )
+            renderParamsBuffer = device.makeBuffer(
+                bytes: &renderParams,
+                length: MemoryLayout<RenderParams>.stride,
+                options: .storageModeShared
+            )!
+            renderParamsBuffer.label = "RenderParamsBuffer"
         } catch {
             fatalError("Unable to create renderers: \(error)")
         }
@@ -268,11 +285,11 @@ actor Renderer {
                     let planeTransform = planeAnchor.originFromAnchorTransform
                     let planeY = planeTransform.columns.3.y
 
-                    // Filter by device-relative height (1.5m〜1.8m below device)
+                    // Filter by device-relative height
                     let deviceY = sharedRenderState.withLock { $0.deviceY }
                     if let deviceY = deviceY {
-                        let expectedFloorMax = deviceY - 1.5
-                        let expectedFloorMin = deviceY - 1.8
+                        let expectedFloorMax = deviceY + AppConfig.Spatial.floorYOffsetMax
+                        let expectedFloorMin = deviceY + AppConfig.Spatial.floorYOffsetMin
                         guard planeY >= expectedFloorMin && planeY <= expectedFloorMax else {
                             print("[Renderer] Floor plane rejected (out of range) at Y: \(planeY), deviceY: \(deviceY), expected: \(expectedFloorMin)〜\(expectedFloorMax)")
                             continue
@@ -411,7 +428,7 @@ actor Renderer {
                 } else {
                     print("[Renderer] ⏳ downloading — checking status...")
                 }
-                try? await Task.sleep(for: .seconds(5))
+                try? await Task.sleep(for: .seconds(AppConfig.ICloud.checkInterval))
             }
             print("[Renderer] ✅ iCloud download complete, starting scan")
         }
@@ -490,9 +507,9 @@ actor Renderer {
 
             // Distance attenuation
             environment.distanceAttenuationParameters.distanceAttenuationModel = .exponential
-            environment.distanceAttenuationParameters.rolloffFactor = 2.0  // inverse-square: gain = (refDist/dist)^2
-            environment.distanceAttenuationParameters.referenceDistance = 1.0
-            environment.distanceAttenuationParameters.maximumDistance = 50.0
+            environment.distanceAttenuationParameters.rolloffFactor = AppConfig.Audio.rolloffFactor
+            environment.distanceAttenuationParameters.referenceDistance = AppConfig.Audio.referenceDistance
+            environment.distanceAttenuationParameters.maximumDistance = AppConfig.Audio.maxDistance
 
             // Schedule file for playback (don't play yet)
             player.scheduleFile(file, at: nil)
@@ -640,7 +657,7 @@ actor Renderer {
 
     private func seekAudio(to frameIndex: Int) {
         guard let player = playerNode, let file = audioFile else { return }
-        let targetTime = Double(frameIndex) / 30.0
+        let targetTime = Double(frameIndex) / Double(AppConfig.Playback.frameRate)
         let startFrame = AVAudioFramePosition(targetTime * file.processingFormat.sampleRate)
         guard startFrame < file.length else { return }
         let remaining = AVAudioFrameCount(file.length - startFrame)
@@ -932,17 +949,18 @@ actor Renderer {
 
         // Compute pass for point cloud (must run before render encoder)
         if currentDisplayMode != .axesPlacement {
-            _ = pointCloudRenderer.prepareFrame(commandBuffer: commandBuffer)
+            _ = pointCloudRenderer.prepareFrame(commandBuffer: commandBuffer, renderParamsBuffer: renderParamsBuffer)
         }
 
         // Single render encoder: overlay + content
         guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor) else { return }
         encoder.label = "Main Render"
 
-        // 1) Background overlay (20% black over passthrough)
+        // 1) Background overlay (semi-transparent black over passthrough)
         encoder.setRenderPipelineState(overlayPipeline)
         encoder.setDepthStencilState(overlayDepthState)
         encoder.setViewports(viewports)
+        encoder.setFragmentBuffer(renderParamsBuffer, offset: 0, index: 0)
         if drawable.views.count > 1 {
             var amplifications = drawable.views.indices.map {
                 MTLVertexAmplificationViewMapping(viewportArrayIndexOffset: UInt32($0),
@@ -987,6 +1005,7 @@ actor Renderer {
                 uniformsOffset: uniformBufferOffset,
                 viewProjectionBuffer: drawableTarget.viewProjectionBuffer,
                 viewProjectionOffset: drawableTarget.viewProjectionBufferOffset,
+                renderParamsBuffer: renderParamsBuffer,
                 viewports: viewports,
                 viewCount: drawable.views.count
             )
