@@ -58,6 +58,7 @@ struct SharedRenderState: Sendable {
     var displayMode: AppModel.DisplayMode = .pointCloud
     var anchorTransform: matrix_float4x4? = nil
     var floorY: Float? = nil
+    var deviceY: Float? = nil
     var immersiveSpaceOpen: Bool = false
 }
 
@@ -107,6 +108,10 @@ actor Renderer {
     // Axes renderer for placement mode
     let axesRenderer: AxesRenderer
 
+    // Title image renderer (shown for 5 seconds after /play)
+    let titleRenderer: TitleRenderer
+    private let titleYRotation: Float = 40.0 * (.pi / 180.0)  // degrees → radians
+
     // Background overlay (semi-transparent black)
     let overlayPipeline: MTLRenderPipelineState
     let overlayDepthState: MTLDepthStencilState
@@ -119,7 +124,16 @@ actor Renderer {
 
     // OSC
     enum PlaybackState { case stopped, playing, paused }
-    private var playbackState: PlaybackState = .stopped
+    private var playbackState: PlaybackState = .stopped {
+        didSet {
+            if playbackState == .playing && oldValue == .stopped {
+                titleRenderer.show()
+            }
+            if playbackState == .stopped {
+                titleRenderer.hide()
+            }
+        }
+    }
     private var oscSender: OSCManager?
 
 
@@ -165,6 +179,8 @@ actor Renderer {
             axesRenderer = try AxesRenderer(device: device, library: library, layerRenderer: layerRenderer)
             // Initialize axes at eye level, 1m in front (visible immediately)
             axesRenderer.modelMatrix = matrix4x4_translation(0, 0, -1.0)
+
+            titleRenderer = try TitleRenderer(device: device, library: library, layerRenderer: layerRenderer)
 
             // Background overlay pipeline
             let overlayDesc = MTLRenderPipelineDescriptor()
@@ -251,25 +267,33 @@ actor Renderer {
             for await update in planeDetection.anchorUpdates {
                 guard let planeAnchor = update.anchor as? PlaneAnchor else { continue }
 
-                // Only consider horizontal planes (floor candidates)
-                if planeAnchor.alignment == .horizontal {
+                // Only consider planes classified as floor by ARKit
+                if planeAnchor.classification == .floor {
                     let planeTransform = planeAnchor.originFromAnchorTransform
                     let planeY = planeTransform.columns.3.y
 
-                    print("[Renderer] Horizontal plane detected at Y: \(planeY)")
-
-                    // Update floor Y if this is lower or first detection
-                    await MainActor.run {
-                        if appModel.detectedFloorY == nil || planeY < appModel.detectedFloorY! {
-                            appModel.updateDetectedFloor(planeY)
-                        }
-                        // Lock-based update (no actor scheduling needed)
-                        sharedRenderState.withLock { state in
-                            if state.floorY == nil || planeY < state.floorY! {
-                                state.floorY = planeY
-                            }
+                    // Filter by device-relative height (1.5m〜1.8m below device)
+                    let deviceY = sharedRenderState.withLock { $0.deviceY }
+                    if let deviceY = deviceY {
+                        let expectedFloorMax = deviceY - 1.5
+                        let expectedFloorMin = deviceY - 1.8
+                        guard planeY >= expectedFloorMin && planeY <= expectedFloorMax else {
+                            print("[Renderer] Floor plane rejected (out of range) at Y: \(planeY), deviceY: \(deviceY), expected: \(expectedFloorMin)〜\(expectedFloorMax)")
+                            continue
                         }
                     }
+
+                    print("[Renderer] Floor plane accepted (classification: .floor) at Y: \(planeY)")
+
+                    // Update floor Y (use latest accepted value, not minimum)
+                    await MainActor.run {
+                        appModel.updateDetectedFloor(planeY)
+                        sharedRenderState.withLock { state in
+                            state.floorY = planeY
+                        }
+                    }
+                } else {
+                    print("[Renderer] Non-floor plane detected (classification: \(planeAnchor.classification), alignment: \(planeAnchor.alignment))")
                 }
             }
         }
@@ -716,7 +740,7 @@ actor Renderer {
                 // Position: directly below device (same X, Z, but on floor)
                 let previewPos = SIMD3<Float>(
                     devicePosition.x,
-                    sharedRenderState.withLock({ $0.floorY }) ?? (devicePosition.y - 1.5),  // Floor or 1.5m below device
+                    sharedRenderState.withLock({ $0.floorY }) ?? 0.0,  // Floor or Y=0 fallback
                     devicePosition.z
                 )
                 
@@ -820,6 +844,11 @@ actor Renderer {
         drawable.deviceAnchor = deviceAnchor
         #endif
         
+        // Update device Y position for floor detection filtering
+        if let anchor = deviceAnchor {
+            sharedRenderState.withLock { $0.deviceY = anchor.originFromAnchorTransform.columns.3.y }
+        }
+
         // Read display mode from shared state (synchronous, no MainActor hop)
         let newMode = sharedRenderState.withLock { $0.displayMode }
         self.updateDisplayMode(newMode)
@@ -945,6 +974,22 @@ actor Renderer {
                 data: data,
                 uniformsBuffer: dynamicUniformBuffer,
                 uniformsOffset: uniformBufferOffset,
+                viewProjectionBuffer: drawableTarget.viewProjectionBuffer,
+                viewProjectionOffset: drawableTarget.viewProjectionBufferOffset,
+                viewports: viewports,
+                viewCount: drawable.views.count
+            )
+        }
+
+        // Title image (shown for 5 seconds after /play)
+        if titleRenderer.shouldRender {
+            var titleUniforms = uniforms[0]
+            let titleTransform = matrix4x4_translation(-0.8, 1.2, -0.1)
+                * matrix4x4_rotation(radians: titleYRotation, axis: SIMD3<Float>(0, 1, 0))
+            titleUniforms.modelMatrix = uniforms[0].modelMatrix * titleTransform
+            titleRenderer.renderInto(
+                encoder: encoder,
+                uniforms: titleUniforms,
                 viewProjectionBuffer: drawableTarget.viewProjectionBuffer,
                 viewProjectionOffset: drawableTarget.viewProjectionBufferOffset,
                 viewports: viewports,
