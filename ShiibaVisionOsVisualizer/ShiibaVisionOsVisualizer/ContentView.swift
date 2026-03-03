@@ -26,7 +26,7 @@ struct ContentView: View {
             // Start button - Open ImmersiveSpace and show point cloud
             Button {
                 Task {
-                    appModel.enterPointCloudMode()
+                    await appModel.enterPointCloudMode()
                     if appModel.immersiveSpaceState != .open {
                         await openImmersiveSpace(id: appModel.immersiveSpaceID)
                     }
@@ -187,7 +187,7 @@ struct ContentView: View {
             // Auto-start check
             if appModel.autoStartEnabled && appModel.worldAnchorID != nil {
                 Task {
-                    appModel.enterPointCloudMode()
+                    await appModel.enterPointCloudMode()
                     if appModel.immersiveSpaceState != .open {
                         await openImmersiveSpace(id: appModel.immersiveSpaceID)
                     }
@@ -211,7 +211,7 @@ struct ContentView: View {
             guard requested else { return }
             appModel.oscPlayRequested = false
             Task {
-                appModel.enterPointCloudMode()
+                await appModel.enterPointCloudMode()
                 if appModel.immersiveSpaceState != .open {
                     await openImmersiveSpace(id: appModel.immersiveSpaceID)
                 }

@@ -60,6 +60,7 @@ struct SharedRenderState: Sendable {
     var floorY: Float? = nil
     var deviceY: Float? = nil
     var immersiveSpaceOpen: Bool = false
+    var playbackRequested: Bool = false
 }
 
 enum OSCCommand: Sendable {
@@ -234,37 +235,32 @@ actor Renderer {
         print("[Renderer] Using shared ARKit session from AppModel")
 
         let wt = await appModel.worldTracking
-        let pd = await appModel.planeDetection
         print("[Renderer] WorldTracking state: \(wt.state)")
-        print("[Renderer] PlaneDetection state: \(pd.state)")
-
-        // Start floor detection monitoring
-        Task {
-            await startFloorDetection()
-        }
     }
     
     // Helper to set simulator flag from async context
     private func setSimulatorFlag(_ flag: Bool) {
         self.isRunningOnSimulator = flag
     }
-    
-    
-    private var lastFloorDetectionTime: TimeInterval = 0
-    private let floorDetectionInterval: TimeInterval = 0.5  // Check every 0.5 seconds
-    
+
+    private var floorDetectionTask: Task<Void, Never>?
+
     // Start monitoring floor planes in background
     // NOTE: Task.detached is required to avoid RendererTaskExecutor starvation.
     // The render loop (90fps while-true) monopolizes RendererTaskExecutor,
     // preventing inherited Tasks from resuming after await suspension points.
     private func startFloorDetection() async {
+        // Cancel any existing task before starting a new one
+        floorDetectionTask?.cancel()
+
         let planeDetection = await appModel.planeDetection
         let appModel = self.appModel
 
         print("[Renderer] Starting floor detection monitoring...")
 
-        Task.detached {
+        floorDetectionTask = Task.detached {
             for await update in planeDetection.anchorUpdates {
+                if Task.isCancelled { break }
                 guard let planeAnchor = update.anchor as? PlaneAnchor else { continue }
 
                 // Only consider planes classified as floor by ARKit
@@ -299,6 +295,12 @@ actor Renderer {
         }
     }
 
+    private func stopFloorDetection() {
+        floorDetectionTask?.cancel()
+        floorDetectionTask = nil
+        print("[Renderer] Floor detection stopped")
+    }
+
     @MainActor
     static func startRenderLoop(_ layerRenderer: LayerRenderer, appModel: AppModel, arSession: ARKitSession) {
         print("[Renderer] startRenderLoop called")
@@ -324,7 +326,12 @@ actor Renderer {
             
             // Start animation or load single frame depending on available files
             if initialMode == .pointCloud {
-                await renderer.scanAndStartAnimation()
+                let requested = sharedRenderState.withLock { $0.playbackRequested }
+                if requested {
+                    await renderer.scanAndStartAnimation()
+                } else {
+                    print("[Renderer] Point cloud mode but playback not requested (scene restored?), waiting for command")
+                }
             } else {
                 print("[Renderer] Axes placement mode, skipping PLY load")
             }
@@ -678,15 +685,19 @@ actor Renderer {
     private func updateDisplayMode(_ mode: AppModel.DisplayMode) {
         if currentDisplayMode != mode {
             print("[Renderer] 🔄 Display mode changed: \(currentDisplayMode) -> \(mode)")
-            
+
             // If switching to point cloud mode, start animation
             if mode == .pointCloud && currentDisplayMode == .axesPlacement {
+                stopFloorDetection()
                 Task {
                     await scanAndStartAnimation()
                 }
             } else if mode == .axesPlacement {
                 pointCloudRenderer.stopAnimation()
                 stopAudio()
+                Task {
+                    await startFloorDetection()
+                }
             }
         }
         currentDisplayMode = mode
@@ -1017,9 +1028,13 @@ actor Renderer {
                 print("Layer is invalidated")
                 pointCloudRenderer.stopAnimation()
                 stopAudio()
+                stopFloorDetection()
                 oscSender?.send(OSCMessage(address: "/stopped"))
                 playbackState = .stopped
-                sharedRenderState.withLock { $0.immersiveSpaceOpen = false }
+                sharedRenderState.withLock {
+                    $0.immersiveSpaceOpen = false
+                    $0.playbackRequested = false
+                }
                 Task { @MainActor in
                     appModel.immersiveSpaceState = .closed
                 }

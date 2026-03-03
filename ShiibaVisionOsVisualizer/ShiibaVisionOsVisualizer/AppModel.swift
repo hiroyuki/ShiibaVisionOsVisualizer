@@ -219,11 +219,10 @@ class AppModel {
         }
         
         do {
-            try await arSession.run([worldTracking, planeDetection])
+            try await arSession.run([worldTracking])
             isARSessionRunning = true
-            print("[AppModel] ARKit session started with world tracking and plane detection")
+            print("[AppModel] ARKit session started with world tracking only")
             print("[AppModel] WorldTracking state: \(worldTracking.state)")
-            print("[AppModel] PlaneDetection state: \(planeDetection.state)")
 
             // Monitor provider state changes
             Task {
@@ -262,14 +261,41 @@ class AppModel {
         worldAnchorManager.clearAnchor()
         
         print("[AppModel] Entered axes placement mode - waiting for user to move to desired position")
+
+        await startPlaneDetection()
     }
     
-    func enterPointCloudMode() {
+    func enterPointCloudMode() async {
+        await stopPlaneDetection()
+        detectedFloorY = nil
         displayMode = .pointCloud
-        sharedRenderState.withLock { $0.displayMode = .pointCloud }
+        sharedRenderState.withLock {
+            $0.displayMode = .pointCloud
+            $0.playbackRequested = true
+        }
         print("[AppModel] Entered point cloud mode")
     }
     
+    func startPlaneDetection() async {
+        guard isARSessionRunning else { return }
+        do {
+            try await arSession.run([worldTracking, planeDetection])
+            print("[AppModel] PlaneDetection started")
+        } catch {
+            print("[AppModel] Failed to start PlaneDetection: \(error)")
+        }
+    }
+
+    func stopPlaneDetection() async {
+        guard isARSessionRunning else { return }
+        do {
+            try await arSession.run([worldTracking])
+            print("[AppModel] PlaneDetection stopped")
+        } catch {
+            print("[AppModel] Failed to stop PlaneDetection: \(error)")
+        }
+    }
+
     func updateDeviceTransform(_ transform: matrix_float4x4) {
         deviceTransform = transform
         
