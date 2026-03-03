@@ -559,7 +559,10 @@ actor Renderer {
         }
         for command in commands {
             switch command {
-            case .play:    oscPlay()
+            case .play:
+                startPlayback()
+                oscSender?.send(OSCMessage(address: "/played"))
+                print("[OSC] Play")
             case .pause:   oscPause()
             case .resume:  oscResume()
             case .stop:    oscStop()
@@ -570,10 +573,9 @@ actor Renderer {
         }
     }
 
-    private func oscPlay() {
+    private func startPlayback() {
         guard playbackState == .stopped else { return }
 
-        // Re-scan + prepare audio + start animation (all synchronous for multi-frame)
         let urls: [URL]
         if let cached = cachedPLYURLs {
             urls = cached
@@ -582,7 +584,7 @@ actor Renderer {
             cachedPLYURLs = urls
         }
         guard !urls.isEmpty else {
-            print("[OSC] Play: no PLY files found")
+            print("[Renderer] Play: no PLY files found")
             return
         }
 
@@ -602,8 +604,6 @@ actor Renderer {
         })
 
         playbackState = .playing
-        oscSender?.send(OSCMessage(address: "/played"))
-        print("[OSC] Play")
     }
 
     private func oscPause() {
@@ -1059,10 +1059,26 @@ actor Renderer {
                 }
                 return
             } else if layerRenderer.state == .paused {
+                // VisionPro取り外し: 再生中なら停止
+                let wasPlaying = (playbackState == .playing || playbackState == .paused)
+                if wasPlaying {
+                    pointCloudRenderer.stopAnimation()
+                    pointCloudRenderer.clearDisplay()
+                    stopAudio()
+                    playbackState = .stopped
+                    print("[Renderer] ⏸️ Paused by system — stopped playback for restart")
+                }
                 Task { @MainActor in
                     appModel.immersiveSpaceState = .inTransition
                 }
                 layerRenderer.waitUntilRunning()
+                // VisionPro再装着: 再生中だった場合、Auto Start設定がONなら最初から再開
+                if wasPlaying && UserDefaults.standard.bool(forKey: "auto_start_enabled") {
+                    print("[Renderer] ▶️ Resumed — restarting from beginning (auto start enabled)")
+                    startPlayback()
+                } else if wasPlaying {
+                    print("[Renderer] ▶️ Resumed — auto start disabled, staying stopped")
+                }
                 continue
             } else {
                 Task { @MainActor in
