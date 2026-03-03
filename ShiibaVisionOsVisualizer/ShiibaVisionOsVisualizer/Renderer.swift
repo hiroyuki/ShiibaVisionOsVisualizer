@@ -108,6 +108,10 @@ actor Renderer {
     // Axes renderer for placement mode
     let axesRenderer: AxesRenderer
 
+    // Title image renderer (shown for 5 seconds after /play)
+    let titleRenderer: TitleRenderer
+    private let titleYRotation: Float = 40.0 * (.pi / 180.0)  // degrees → radians
+
     // Background overlay (semi-transparent black)
     let overlayPipeline: MTLRenderPipelineState
     let overlayDepthState: MTLDepthStencilState
@@ -120,7 +124,16 @@ actor Renderer {
 
     // OSC
     enum PlaybackState { case stopped, playing, paused }
-    private var playbackState: PlaybackState = .stopped
+    private var playbackState: PlaybackState = .stopped {
+        didSet {
+            if playbackState == .playing && oldValue == .stopped {
+                titleRenderer.show()
+            }
+            if playbackState == .stopped {
+                titleRenderer.hide()
+            }
+        }
+    }
     private var oscSender: OSCManager?
 
 
@@ -166,6 +179,8 @@ actor Renderer {
             axesRenderer = try AxesRenderer(device: device, library: library, layerRenderer: layerRenderer)
             // Initialize axes at eye level, 1m in front (visible immediately)
             axesRenderer.modelMatrix = matrix4x4_translation(0, 0, -1.0)
+
+            titleRenderer = try TitleRenderer(device: device, library: library, layerRenderer: layerRenderer)
 
             // Background overlay pipeline
             let overlayDesc = MTLRenderPipelineDescriptor()
@@ -959,6 +974,22 @@ actor Renderer {
                 data: data,
                 uniformsBuffer: dynamicUniformBuffer,
                 uniformsOffset: uniformBufferOffset,
+                viewProjectionBuffer: drawableTarget.viewProjectionBuffer,
+                viewProjectionOffset: drawableTarget.viewProjectionBufferOffset,
+                viewports: viewports,
+                viewCount: drawable.views.count
+            )
+        }
+
+        // Title image (shown for 5 seconds after /play)
+        if titleRenderer.shouldRender {
+            var titleUniforms = uniforms[0]
+            let titleTransform = matrix4x4_translation(-0.8, 1.2, -0.1)
+                * matrix4x4_rotation(radians: titleYRotation, axis: SIMD3<Float>(0, 1, 0))
+            titleUniforms.modelMatrix = uniforms[0].modelMatrix * titleTransform
+            titleRenderer.renderInto(
+                encoder: encoder,
+                uniforms: titleUniforms,
                 viewProjectionBuffer: drawableTarget.viewProjectionBuffer,
                 viewProjectionOffset: drawableTarget.viewProjectionBufferOffset,
                 viewports: viewports,
