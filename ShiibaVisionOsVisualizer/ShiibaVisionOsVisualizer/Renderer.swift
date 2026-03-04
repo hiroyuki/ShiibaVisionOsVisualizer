@@ -111,7 +111,7 @@ actor Renderer {
 
     // Title image renderer (shown for 5 seconds after /play)
     let titleRenderer: TitleRenderer
-    private let titleYRotation: Float = 40.0 * (.pi / 180.0)  // degrees → radians
+    private var titleYRotation: Float { AppConfig.Rendering.titleYRotationDegrees * (.pi / 180.0) }
     private let sceneYRotation: Float = AppConfig.Rendering.sceneYRotation * (.pi / 180.0)
 
     // Background overlay (semi-transparent black)
@@ -1029,7 +1029,11 @@ actor Renderer {
         // Title image (shown for 5 seconds after /play)
         if titleRenderer.shouldRender {
             var titleUniforms = uniforms[0]
-            let titleTransform = matrix4x4_translation(-0.8, 1.2, -0.1)
+            let titleTransform = matrix4x4_translation(
+                AppConfig.Rendering.titleOffsetX,
+                AppConfig.Rendering.titleOffsetY,
+                AppConfig.Rendering.titleOffsetZ
+            )
                 * matrix4x4_rotation(radians: titleYRotation, axis: SIMD3<Float>(0, 1, 0))
             titleUniforms.modelMatrix = uniforms[0].modelMatrix * titleTransform
             titleRenderer.renderInto(

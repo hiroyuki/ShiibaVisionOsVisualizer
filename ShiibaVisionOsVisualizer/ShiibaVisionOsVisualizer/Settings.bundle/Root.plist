@@ -129,6 +129,54 @@
             <key>Type</key>
             <string>PSTextFieldSpecifier</string>
             <key>Title</key>
+            <string>Title Offset X (m)</string>
+            <key>Key</key>
+            <string>title_offset_x</string>
+            <key>DefaultValue</key>
+            <string>-0.8</string>
+            <key>KeyboardType</key>
+            <string>NumbersAndPunctuation</string>
+        </dict>
+        <dict>
+            <key>Type</key>
+            <string>PSTextFieldSpecifier</string>
+            <key>Title</key>
+            <string>Title Offset Y (m)</string>
+            <key>Key</key>
+            <string>title_offset_y</string>
+            <key>DefaultValue</key>
+            <string>1.2</string>
+            <key>KeyboardType</key>
+            <string>NumbersAndPunctuation</string>
+        </dict>
+        <dict>
+            <key>Type</key>
+            <string>PSTextFieldSpecifier</string>
+            <key>Title</key>
+            <string>Title Offset Z (m)</string>
+            <key>Key</key>
+            <string>title_offset_z</string>
+            <key>DefaultValue</key>
+            <string>-0.1</string>
+            <key>KeyboardType</key>
+            <string>NumbersAndPunctuation</string>
+        </dict>
+        <dict>
+            <key>Type</key>
+            <string>PSTextFieldSpecifier</string>
+            <key>Title</key>
+            <string>Title Y Rotation (deg)</string>
+            <key>Key</key>
+            <string>title_y_rotation</string>
+            <key>DefaultValue</key>
+            <string>40</string>
+            <key>KeyboardType</key>
+            <string>NumbersAndPunctuation</string>
+        </dict>
+        <dict>
+            <key>Type</key>
+            <string>PSTextFieldSpecifier</string>
+            <key>Title</key>
             <string>Axis Length (m)</string>
             <key>Key</key>
             <string>axis_length</string>

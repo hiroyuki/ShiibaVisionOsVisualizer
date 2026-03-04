@@ -29,6 +29,10 @@ enum AppConfig {
             Rendering.axisLengthKey: String(Rendering.axisLengthDefault),
             Rendering.axisThicknessKey: String(Rendering.axisThicknessDefault),
             Rendering.sceneYRotationKey: String(Rendering.sceneYRotationDefault),
+            Rendering.titleOffsetXKey: String(Rendering.titleOffsetXDefault),
+            Rendering.titleOffsetYKey: String(Rendering.titleOffsetYDefault),
+            Rendering.titleOffsetZKey: String(Rendering.titleOffsetZDefault),
+            Rendering.titleYRotationDegreesKey: String(Rendering.titleYRotationDegreesDefault),
             // C: Playback
             Playback.frameRateKey: String(Playback.frameRateDefault),
             Playback.animationSleepMsKey: Playback.animationSleepMsDefault,
@@ -100,6 +104,10 @@ enum AppConfig {
         static let axisLengthKey = "axis_length"
         static let axisThicknessKey = "axis_thickness"
         static let sceneYRotationKey = "scene_y_rotation"
+        static let titleOffsetXKey = "title_offset_x"
+        static let titleOffsetYKey = "title_offset_y"
+        static let titleOffsetZKey = "title_offset_z"
+        static let titleYRotationDegreesKey = "title_y_rotation"
 
         static let pointPhysicalSizeDefault: Float = 0.001
         static let floorNoiseThresholdDefault: Float = 0.02
@@ -109,6 +117,10 @@ enum AppConfig {
         static let axisLengthDefault: Float = 0.5
         static let axisThicknessDefault: Float = 0.01
         static let sceneYRotationDefault: Float = 0.0
+        static let titleOffsetXDefault: Float = -0.8
+        static let titleOffsetYDefault: Float = 1.2
+        static let titleOffsetZDefault: Float = -0.1
+        static let titleYRotationDegreesDefault: Float = 40.0
 
         static var pointPhysicalSize: Float { floatValue(forKey: pointPhysicalSizeKey, default: pointPhysicalSizeDefault) }
         static var floorNoiseThreshold: Float { floatValue(forKey: floorNoiseThresholdKey, default: floorNoiseThresholdDefault) }
@@ -118,6 +130,10 @@ enum AppConfig {
         static var axisLength: Float { floatValue(forKey: axisLengthKey, default: axisLengthDefault) }
         static var axisThickness: Float { floatValue(forKey: axisThicknessKey, default: axisThicknessDefault) }
         static var sceneYRotation: Float { floatValue(forKey: sceneYRotationKey, default: sceneYRotationDefault) }
+        static var titleOffsetX: Float { floatValue(forKey: titleOffsetXKey, default: titleOffsetXDefault) }
+        static var titleOffsetY: Float { floatValue(forKey: titleOffsetYKey, default: titleOffsetYDefault) }
+        static var titleOffsetZ: Float { floatValue(forKey: titleOffsetZKey, default: titleOffsetZDefault) }
+        static var titleYRotationDegrees: Float { floatValue(forKey: titleYRotationDegreesKey, default: titleYRotationDegreesDefault) }
     }
 
     // MARK: - C: Playback
