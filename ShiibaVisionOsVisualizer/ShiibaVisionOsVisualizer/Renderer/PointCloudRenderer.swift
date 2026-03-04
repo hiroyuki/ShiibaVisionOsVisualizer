@@ -49,7 +49,9 @@ final class PointCloudRenderer {
     private let pendingLock = NSLock()
     private var _pendingFrame: PointCloudData? = nil
     private var onFirstFrameRendered: (() -> Void)?
+    private var onPlaybackFinished: (() -> Void)?
     private var _audioPlaybackStarted = false  // encode()からアニメーションループへの通知
+    private var _playbackFinished = false
 
     // MARK: - Playback Control (OSC)
 
@@ -123,11 +125,12 @@ final class PointCloudRenderer {
     ///   - frameURLs: PLYフレームファイルのURL配列
     ///   - audioTime: オーディオの現在再生位置(秒)を返すクロージャ。nilなら同期ログを出さない
     ///   - startPlayback: 最初のフレームロード完了時に呼ばれるコールバック（オーディオ再生開始用）
-    func startAnimation(frameURLs: [URL], audioTime: (@Sendable () -> Double?)? = nil, startPlayback: (() -> Void)? = nil) {
+    func startAnimation(frameURLs: [URL], audioTime: (@Sendable () -> Double?)? = nil, startPlayback: (() -> Void)? = nil, onFinished: (() -> Void)? = nil) {
         stopAnimation()
         guard !frameURLs.isEmpty else { return }
         // render loopのencode()が最初のフレームを消費した時に呼ぶ
         self.onFirstFrameRendered = startPlayback
+        self.onPlaybackFinished = onFinished
 
         animationTask = Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
@@ -174,12 +177,14 @@ final class PointCloudRenderer {
                 if let target = self.playbackControl.withLock({
                     let t = $0.seekTarget; $0.seekTarget = nil; return t
                 }) {
-                    frameIndex = target
+                    let clamped = max(0, min(target, frameURLs.count - 1))
+                    frameIndex = clamped
                     // 絶対タイムラインを再計算
-                    animationStart = clock.now - Duration.nanoseconds(frameDurationNs * Int64(target))
+                    animationStart = clock.now - Duration.nanoseconds(frameDurationNs * Int64(clamped))
                 }
 
-                let url = frameURLs[frameIndex % frameURLs.count]
+                if frameIndex >= frameURLs.count { break }
+                let url = frameURLs[frameIndex]
 
                 // フレームインデックス更新
                 self.playbackControl.withLock { $0.currentFrameIndex = frameIndex }
@@ -210,6 +215,12 @@ final class PointCloudRenderer {
 
                 frameIndex += 1
             }
+
+            // ループ脱出後: キャンセルでなければ再生完了
+            if !Task.isCancelled {
+                self.pendingLock.withLock { self._playbackFinished = true }
+                print("[PCR] Animation finished: all \(frameURLs.count) frames played")
+            }
         }
         print("[PCR] Animation started: \(frameURLs.count) frames")
     }
@@ -221,6 +232,7 @@ final class PointCloudRenderer {
         pendingLock.withLock {
             _pendingFrame = nil
             _audioPlaybackStarted = false
+            _playbackFinished = false
         }
         playbackControl.withLock {
             $0.isPaused = false
@@ -228,6 +240,8 @@ final class PointCloudRenderer {
             $0.currentFrameIndex = 0
         }
         framesConsumed = 0
+        clearDisplay()
+        onPlaybackFinished = nil
     }
 
     // MARK: - Playback Control API
@@ -283,6 +297,17 @@ final class PointCloudRenderer {
         viewports: [MTLViewport],
         viewCount: Int
     ) {
+        // 再生完了チェック
+        let finished = pendingLock.withLock {
+            if _playbackFinished { _playbackFinished = false; return true }
+            return false
+        }
+        if finished {
+            pointCloudData = nil; isConverted = false
+            onPlaybackFinished?(); onPlaybackFinished = nil
+            return
+        }
+
         // 新フレームが届いていれば取り込む
         let next: PointCloudData? = pendingLock.withLock {
             defer { _pendingFrame = nil }
@@ -401,6 +426,17 @@ final class PointCloudRenderer {
 
     /// Prepare frame data and run compute pass. Returns true if data is ready to render.
     func prepareFrame(commandBuffer: MTLCommandBuffer, renderParamsBuffer: MTLBuffer) -> Bool {
+        // 再生完了チェック
+        let finished = pendingLock.withLock {
+            if _playbackFinished { _playbackFinished = false; return true }
+            return false
+        }
+        if finished {
+            pointCloudData = nil; isConverted = false
+            onPlaybackFinished?(); onPlaybackFinished = nil
+            return false
+        }
+
         let next: PointCloudData? = pendingLock.withLock {
             defer { _pendingFrame = nil }
             return _pendingFrame
