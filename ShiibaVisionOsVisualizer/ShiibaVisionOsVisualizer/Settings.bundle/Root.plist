@@ -149,6 +149,18 @@
             <key>KeyboardType</key>
             <string>DecimalPad</string>
         </dict>
+        <dict>
+            <key>Type</key>
+            <string>PSTextFieldSpecifier</string>
+            <key>Title</key>
+            <string>Scene Y Rotation (°)</string>
+            <key>Key</key>
+            <string>scene_y_rotation</string>
+            <key>DefaultValue</key>
+            <string>0</string>
+            <key>KeyboardType</key>
+            <string>NumbersAndPunctuation</string>
+        </dict>
 
         <!-- C: Playback -->
         <dict>
