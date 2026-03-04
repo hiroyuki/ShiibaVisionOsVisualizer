@@ -521,7 +521,25 @@ actor Renderer {
             // Schedule file for playback (don't play yet)
             player.scheduleFile(file, at: nil)
 
-            try engine.start()
+            // Retry engine.start() up to 3 times (audio session may not be ready after headset resume)
+            var started = false
+            for attempt in 1...3 {
+                do {
+                    try engine.start()
+                    started = true
+                    break
+                } catch {
+                    print("[Renderer] ⚠️ Audio engine start attempt \(attempt)/3 failed: \(error)")
+                    if attempt < 3 {
+                        Thread.sleep(forTimeInterval: 0.5)
+                    }
+                }
+            }
+
+            guard started else {
+                print("[Renderer] ❌ Audio engine failed after 3 attempts — continuing without audio")
+                return
+            }
 
             self.audioEngine = engine
             self.playerNode = player
@@ -1091,6 +1109,13 @@ actor Renderer {
                     appModel.immersiveSpaceState = .inTransition
                 }
                 layerRenderer.waitUntilRunning()
+                // waitUntilRunning() 後にlayer状態を再チェック
+                guard layerRenderer.state != .invalidated else {
+                    print("[Renderer] ⚠️ Layer invalidated after resume — skipping playback restart")
+                    continue
+                }
+                // システム安定のため短い遅延
+                Thread.sleep(forTimeInterval: 0.3)
                 // VisionPro再装着: 再生中だった場合、Auto Start設定がONなら最初から再開
                 if wasPlaying && UserDefaults.standard.bool(forKey: "auto_start_enabled") {
                     print("[Renderer] ▶️ Resumed — restarting from beginning (auto start enabled)")
