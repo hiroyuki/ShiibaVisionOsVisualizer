@@ -28,6 +28,7 @@ enum AppConfig {
             Rendering.titleQuadWidthKey: String(Rendering.titleQuadWidthDefault),
             Rendering.axisLengthKey: String(Rendering.axisLengthDefault),
             Rendering.axisThicknessKey: String(Rendering.axisThicknessDefault),
+            Rendering.sceneYRotationKey: String(Rendering.sceneYRotationDefault),
             // C: Playback
             Playback.frameRateKey: String(Playback.frameRateDefault),
             Playback.animationSleepMsKey: Playback.animationSleepMsDefault,
@@ -98,6 +99,7 @@ enum AppConfig {
         static let titleQuadWidthKey = "title_quad_width"
         static let axisLengthKey = "axis_length"
         static let axisThicknessKey = "axis_thickness"
+        static let sceneYRotationKey = "scene_y_rotation"
 
         static let pointPhysicalSizeDefault: Float = 0.001
         static let floorNoiseThresholdDefault: Float = 0.02
@@ -106,6 +108,7 @@ enum AppConfig {
         static let titleQuadWidthDefault: Float = 0.5
         static let axisLengthDefault: Float = 0.5
         static let axisThicknessDefault: Float = 0.01
+        static let sceneYRotationDefault: Float = 0.0
 
         static var pointPhysicalSize: Float { floatValue(forKey: pointPhysicalSizeKey, default: pointPhysicalSizeDefault) }
         static var floorNoiseThreshold: Float { floatValue(forKey: floorNoiseThresholdKey, default: floorNoiseThresholdDefault) }
@@ -114,6 +117,7 @@ enum AppConfig {
         static var titleQuadWidth: Float { floatValue(forKey: titleQuadWidthKey, default: titleQuadWidthDefault) }
         static var axisLength: Float { floatValue(forKey: axisLengthKey, default: axisLengthDefault) }
         static var axisThickness: Float { floatValue(forKey: axisThicknessKey, default: axisThicknessDefault) }
+        static var sceneYRotation: Float { floatValue(forKey: sceneYRotationKey, default: sceneYRotationDefault) }
     }
 
     // MARK: - C: Playback

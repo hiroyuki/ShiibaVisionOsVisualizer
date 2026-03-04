@@ -112,6 +112,7 @@ actor Renderer {
     // Title image renderer (shown for 5 seconds after /play)
     let titleRenderer: TitleRenderer
     private let titleYRotation: Float = 40.0 * (.pi / 180.0)  // degrees → radians
+    private let sceneYRotation: Float = AppConfig.Rendering.sceneYRotation * (.pi / 180.0)
 
     // Background overlay (semi-transparent black)
     let overlayPipeline: MTLRenderPipelineState
@@ -890,10 +891,12 @@ actor Renderer {
         let (shouldRender, matrixToUse) = self.updateRenderState(deviceAnchor: deviceAnchor)
         
         if shouldRender {
-            // Update matrices immediately
-            self.pointCloudRenderer.modelMatrix = matrixToUse
-            self.axesRenderer.modelMatrix = matrixToUse
-            self.uniforms[0].modelMatrix = matrixToUse
+            // Apply scene Y rotation (Settings.bundle) around anchor origin
+            let sceneRotation = matrix4x4_rotation(radians: sceneYRotation, axis: SIMD3<Float>(0, 1, 0))
+            let rotatedMatrix = matrixToUse * sceneRotation
+            self.pointCloudRenderer.modelMatrix = rotatedMatrix
+            self.axesRenderer.modelMatrix = rotatedMatrix
+            self.uniforms[0].modelMatrix = rotatedMatrix
         }
 
         // Update spatial audio listener/source positions each frame
