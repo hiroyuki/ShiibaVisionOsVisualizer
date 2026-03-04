@@ -128,13 +128,13 @@ actor Renderer {
     private var audioFile: AVAudioFile?
 
     // OSC
-    enum PlaybackState { case stopped, playing, paused }
+    enum PlaybackState { case stopped, playing, paused, finished }
     private var playbackState: PlaybackState = .stopped {
         didSet {
-            if playbackState == .playing && oldValue == .stopped {
+            if playbackState == .playing && (oldValue == .stopped || oldValue == .finished) {
                 titleRenderer.show()
             }
-            if playbackState == .stopped {
+            if playbackState == .stopped || playbackState == .finished {
                 titleRenderer.hide()
             }
         }
@@ -457,6 +457,12 @@ actor Renderer {
                 return Double(playerTime.sampleTime) / playerTime.sampleRate
             }, startPlayback: {
                 pNode?.play()
+            }, onFinished: { [weak self] in
+                guard let self else { return }
+                self.stopAudio()
+                self.playbackState = .finished
+                self.oscSender?.send(OSCMessage(address: "/stopped"))
+                print("[Renderer] Playback finished")
             })
             playbackState = .playing
             oscSender?.send(OSCMessage(address: "/played"))
@@ -575,7 +581,7 @@ actor Renderer {
     }
 
     private func startPlayback() {
-        guard playbackState == .stopped else { return }
+        guard playbackState == .stopped || playbackState == .finished else { return }
 
         let urls: [URL]
         if let cached = cachedPLYURLs {
@@ -602,6 +608,12 @@ actor Renderer {
             return Double(playerTime.sampleTime) / playerTime.sampleRate
         }, startPlayback: {
             pNode?.play()
+        }, onFinished: { [weak self] in
+            guard let self else { return }
+            self.stopAudio()
+            self.playbackState = .finished
+            self.oscSender?.send(OSCMessage(address: "/stopped"))
+            print("[Renderer] Playback finished")
         })
 
         playbackState = .playing
@@ -635,7 +647,7 @@ actor Renderer {
     }
 
     private func oscSeek(to frameIndex: Int) {
-        guard playbackState != .stopped else { return }
+        guard playbackState != .stopped && playbackState != .finished else { return }
         pointCloudRenderer.seekAnimation(to: frameIndex)
         seekAudio(to: frameIndex)
         oscSender?.send(OSCMessage(address: "/seeked", arguments: [.int32(Int32(frameIndex))]))
@@ -1063,7 +1075,7 @@ actor Renderer {
                 return
             } else if layerRenderer.state == .paused {
                 // VisionPro取り外し: 再生中なら停止
-                let wasPlaying = (playbackState == .playing || playbackState == .paused)
+                let wasPlaying = (playbackState == .playing || playbackState == .paused || playbackState == .finished)
                 if wasPlaying {
                     pointCloudRenderer.stopAnimation()
                     pointCloudRenderer.clearDisplay()
