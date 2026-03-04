@@ -6,8 +6,6 @@
 //
 
 import SwiftUI
-import RealityKit
-import RealityKitContent
 
 struct ContentView: View {
 
@@ -18,9 +16,6 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 20) {
-            Model3D(named: "Scene", bundle: realityKitContentBundle)
-                .padding(.bottom, 50)
-
             Text("Hello, world!")
 
             // Start button - Open ImmersiveSpace and show point cloud

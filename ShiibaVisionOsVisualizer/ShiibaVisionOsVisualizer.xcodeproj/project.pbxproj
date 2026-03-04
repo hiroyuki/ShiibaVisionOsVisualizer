@@ -7,13 +7,11 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		64FF2C6E2F4469FA007FA2D2 /* RealityKitContent in Frameworks */ = {isa = PBXBuildFile; productRef = 64FF2C6D2F4469FA007FA2D2 /* RealityKitContent */; };
 		64FF2C982F449BD2007FA2D2 /* .gitignore in Resources */ = {isa = PBXBuildFile; fileRef = 64FF2C972F449BD2007FA2D2 /* .gitignore */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		64FF2C682F4469FA007FA2D2 /* ShiibaVisionOsVisualizer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ShiibaVisionOsVisualizer.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		64FF2C6C2F4469FA007FA2D2 /* RealityKitContent */ = {isa = PBXFileReference; lastKnownFileType = wrapper; path = RealityKitContent; sourceTree = "<group>"; };
 		64FF2C972F449BD2007FA2D2 /* .gitignore */ = {isa = PBXFileReference; lastKnownFileType = text; path = .gitignore; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -43,7 +41,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				64FF2C6E2F4469FA007FA2D2 /* RealityKitContent in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -71,7 +68,6 @@
 		64FF2C6B2F4469FA007FA2D2 /* Packages */ = {
 			isa = PBXGroup;
 			children = (
-				64FF2C6C2F4469FA007FA2D2 /* RealityKitContent */,
 			);
 			path = Packages;
 			sourceTree = "<group>";
@@ -96,7 +92,6 @@
 			);
 			name = ShiibaVisionOsVisualizer;
 			packageProductDependencies = (
-				64FF2C6D2F4469FA007FA2D2 /* RealityKitContent */,
 			);
 			productName = ShiibaVisionOsVisualizer;
 			productReference = 64FF2C682F4469FA007FA2D2 /* ShiibaVisionOsVisualizer.app */;
@@ -364,12 +359,6 @@
 		};
 /* End XCConfigurationList section */
 
-/* Begin XCSwiftPackageProductDependency section */
-		64FF2C6D2F4469FA007FA2D2 /* RealityKitContent */ = {
-			isa = XCSwiftPackageProductDependency;
-			productName = RealityKitContent;
-		};
-/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 64FF2C602F4469FA007FA2D2 /* Project object */;
 }
