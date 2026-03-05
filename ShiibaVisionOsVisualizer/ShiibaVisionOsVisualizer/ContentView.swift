@@ -25,7 +25,6 @@ struct ContentView: View {
                     if appModel.immersiveSpaceState != .open {
                         await openImmersiveSpace(id: appModel.immersiveSpaceID)
                     }
-                    dismissWindow()
                 }
             } label: {
                 Label("Start", systemImage: "play.fill")
@@ -186,7 +185,6 @@ struct ContentView: View {
                     if appModel.immersiveSpaceState != .open {
                         await openImmersiveSpace(id: appModel.immersiveSpaceID)
                     }
-                    dismissWindow()
                     print("[ContentView] Auto-start: point cloud playback started")
                 }
             }
@@ -210,7 +208,6 @@ struct ContentView: View {
                 if appModel.immersiveSpaceState != .open {
                     await openImmersiveSpace(id: appModel.immersiveSpaceID)
                 }
-                dismissWindow()
             }
         }
     }
